@@ -2,8 +2,9 @@
 Edge extraction module for Python ASTs.
 """
 
+from pipeline.utils import _extract_instance_attribute_usage, _get_func_id, _get_class_info, \
+    _extract_variable_usage, _extract_env_edge, _extract_call_edge, _collect_scope_vars
 from pipeline.parser import ParsedFile
-from pipeline.utils import detect_env_var
 
 class ASTEdgeExtractor:
     """
@@ -57,68 +58,45 @@ class ASTEdgeExtractor:
             for iattr in nodes.get("InstanceAttribute", []):
                 edges.append({"src": iattr["class_id"], "edge": "HAS_INSTANCE_ATTRIBUTE", "target": iattr["id"]})
 
+            # EnvVarUsage — now identical pattern:
+            for usage in nodes.get("EnvVarUsage", []):
+                edges.append({"src": usage["scope_id"], "edge": "USES_ENV", "target": f"ENV::{usage['env_name']}"})
+
         # ALL CALLS & USES_ENV EDGES ACROSS ALL SCOPES
         self._extract_all_calls_and_envs(root_node, file_path, edges)
 
         return edges
 
     def _extract_all_calls_and_envs(self, root_node, file_path: str, edges: list):
-        def visit(node, current_scope_id=file_path, current_class_name=None):
+        def visit(node, current_scope_id=file_path, current_class_name=None, local_vars=None, explicit_globals=None):
+            if local_vars is None:
+                local_vars = set()
+            if explicit_globals is None:
+                explicit_globals = set()
             if node.type == "class_definition":
-                name_n = node.child_by_field_name("name")
-                c_name = name_n.text.decode("utf8") if name_n else None
-                class_id = f"{file_path}::{c_name}" if c_name else file_path
-
+                c_name, class_id = _get_class_info(node, file_path)
                 body = node.child_by_field_name("body")
                 if body:
                     for child in body.children:
-                        visit(child, current_scope_id=class_id, current_class_name=c_name)
+                        visit(child, current_scope_id=class_id, current_class_name=c_name, local_vars=local_vars, explicit_globals=explicit_globals)
                 return
-
             elif node.type == "function_definition":
-                name_n = node.child_by_field_name("name")
-                if name_n:
-                    fn_name = name_n.text.decode("utf8")
-                    if current_class_name:
-                        func_id = f"{file_path}::{current_class_name}.{fn_name}"
-                    else:
-                        func_id = f"{file_path}::{fn_name}"
-
-                    body = node.child_by_field_name("body")
-                    if body:
-                        for child in body.children:
-                            visit(child, current_scope_id=func_id, current_class_name=None)
-                    return
-
-            if node.type == "call":
-                func_n = node.child_by_field_name("function")
-                if func_n:
-                    target_name = None
-                    if func_n.type == "identifier":
-                        target_name = func_n.text.decode("utf8")
-                    elif func_n.type == "attribute":
-                        obj_n = func_n.child_by_field_name("object")
-                        attr_n = func_n.child_by_field_name("attribute")
-                        if obj_n and attr_n:
-                            target_name = f"{obj_n.text.decode('utf8')}.{attr_n.text.decode('utf8')}"
-
-                    if target_name:
-                        edges.append({
-                            "src": current_scope_id,
-                            "edge": "CALLS",
-                            "target": target_name,
-                            "line": node.start_point[0] + 1
-                        })
-
-            env_name = detect_env_var(node)
-            if env_name:
-                edges.append({
-                    "src": current_scope_id,
-                    "edge": "USES_ENV",
-                    "target": f"ENV::{env_name}"
-                })
-
+                func_id = _get_func_id(node, file_path, current_class_name)
+                body = node.child_by_field_name("body")
+                if body:
+                    # Collect locals and explicit globals for THIS function block specifically
+                    new_explicit_globals, new_local_vars = _collect_scope_vars(node)
+                    
+                    for child in body.children:
+                        # Enter new scope, passing the new scope's variables down
+                        visit(child, current_scope_id=func_id, current_class_name=None, local_vars=new_local_vars, explicit_globals=new_explicit_globals)
+                return
+            # Unified usage checks for the current node
+            _extract_call_edge(node, current_scope_id, edges)
+            _extract_env_edge(node, current_scope_id, edges)
+            _extract_variable_usage(node, current_scope_id, local_vars, edges)
+            _extract_instance_attribute_usage(node, current_scope_id, edges)
+            # Continue traversing children
             for child in node.children:
-                visit(child, current_scope_id=current_scope_id, current_class_name=current_class_name)
-
+                visit(child, current_scope_id=current_scope_id, current_class_name=current_class_name, local_vars=local_vars, explicit_globals=explicit_globals)
         visit(root_node)

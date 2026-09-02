@@ -35,13 +35,11 @@ class WeaviateCloudCodeDB:
     """
 
     def __init__(self, cluster_url: str, api_key: str):
-        # Connect to Weaviate Cloud Services (strip http/https protocol prefix if present)
-        clean_url = cluster_url.replace("https://", "").replace("http://", "")
+        # Connect to Weaviate Cloud Services
         self.client = weaviate.connect_to_weaviate_cloud(
-            cluster_url=clean_url,
+            cluster_url=cluster_url,
             auth_credentials=Auth.api_key(api_key)
         )
-
         self.collection_name = "CodeChunk"
 
         # Local embedding model (converts code into 384-dim vectors)

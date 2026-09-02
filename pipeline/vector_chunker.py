@@ -34,8 +34,8 @@ class ASTVectorChunker:
             f"# File: {file_path}",
             f"# Module Docstring: {module_docstring}" if module_docstring else "",
             f"# Top-Level Comments: {', '.join(top_level_comments)}" if top_level_comments else "",
-            "\n# Code Preview (First 50 lines):",
-            "\n".join(code_lines[:50])
+            "\n# Code:",
+            "\n".join(code_lines)
         ]
         file_page_content = "\n".join([s for s in file_content_sections if s])
 
