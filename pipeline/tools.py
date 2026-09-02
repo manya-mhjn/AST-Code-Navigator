@@ -1,13 +1,15 @@
 """
-tools.py — Agent Tool Interfaces and Intent Classifier for CodeNavigator.
+tools.py — LangChain Agent Tools and Intent Classifier for CodeNavigator.
 
-Exposes structured tools, intent classification, and composite workflows.
+Exposes LangChain @tool decorated tools, intent classification, and composite workflows.
 """
 
 from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional
+
+from langchain_core.tools import tool
 
 from pipeline.graph_traversal import traverse_call_graph
 from pipeline.tools_utils import (
@@ -112,13 +114,20 @@ def classify_intent(query: str) -> Dict[str, Any]:
     return classifier.classify(query).to_dict()
 
 
+# -----------------------------------------------------------------------------
+# LangChain Tools
+# -----------------------------------------------------------------------------
+
+@tool
 def tool_classify_intent(query: str) -> Dict[str, Any]:
     """
-    Agent tool to classify developer queries into execution tiers (DETERMINISTIC_1_SHOT, GUIDED_RECIPE, REACT_FALLBACK).
+    Classifies a developer question into execution tiers (DETERMINISTIC_1_SHOT, GUIDED_RECIPE, REACT_FALLBACK).
+    Returns task name, execution strategy, recommended tools, and workflow recipes.
     """
     return classify_intent(query)
 
 
+@tool
 def tool_traverse_call_graph(
     target_symbol: str,
     direction: str = "incoming",
@@ -128,7 +137,8 @@ def tool_traverse_call_graph(
     limit: int = 50,
 ) -> Dict[str, Any]:
     """
-    Agent tool to perform upstream (caller) or downstream (callee) call graph traversals.
+    Traverses the call graph in Neo4j up to max_depth hops.
+    Use direction='incoming' for callers (upstream) and direction='outgoing' for dependencies (downstream).
     """
     return traverse_call_graph(
         target_symbol=target_symbol,
