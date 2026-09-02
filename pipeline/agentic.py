@@ -28,12 +28,15 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from pipeline.graph_traversal import CallGraphTraversal, print_traversal_result
 from pipeline.neo4j_sink import Neo4jCodeGraphIngestor
 from pipeline.tools import classify_intent, tool_classify_intent, tool_traverse_call_graph
 from pipeline.tools_utils import ExecutionStrategy, ExecutionType
 from pipeline.weaviate_sink import WeaviateCloudCodeDB
+from pipeline.utils import get_llm
 
 
 def _require_env(name: str) -> str:
@@ -65,7 +68,17 @@ class CodeNavigatorAgentState(TypedDict):
     tool_output: Optional[Dict[str, Any]]
     final_summary: Optional[str]
 
-
+# 1. Full Tool Catalog for ReAct Fallback
+FULL_TOOL_CATALOG = [
+    tool_traverse_call_graph,
+    tool_classify_intent,
+    # Add your other tools here:
+    # calculate_blast_radius,
+    # search_codebase_semantic,
+    # get_symbol_code_snippet,
+    # query_api_endpoints,
+    # detect_orphan_and_dead_code,
+]
 # -----------------------------------------------------------------------------
 # LangGraph Nodes
 # -----------------------------------------------------------------------------
@@ -165,41 +178,88 @@ def deterministic_1_shot_node(state: CodeNavigatorAgentState) -> Dict[str, Any]:
         }
 
 
-def guided_recipe_node(state: CodeNavigatorAgentState) -> Dict[str, Any]:
-    """Node 2B: Injects workflow recipes and constrains tools for branching execution."""
+
+
+# In pipeline/agentic.py
+
+def guided_llm_node(state: CodeNavigatorAgentState):
+    """Invokes LLM with the injected recipe and restricted toolset."""
     recipe = state.get("workflow_recipe")
-    allowed = state.get("allowed_tools", [])
-    symbols = state.get("target_symbols", [])
+    query = state["query"]
+    allowed_tool_names = state.get("allowed_tools", [])
 
-    print(f"\n>> [LangGraph Node: Guided Recipe Orchestrator (Branching 2-3 Turns)]")
-    print(f"   Allowed Tools: {allowed}")
-    print(f"\n   --- WORKFLOW RECIPE ---\n{recipe}\n   -----------------------")
+    # 1. Filter tools to only those allowed for this recipe
+    active_tools = [t for t in FULL_TOOL_CATALOG if t.name in allowed_tool_names]
+    
+    # Safety check: if no specific tools matched, fall back to FULL_TOOL_CATALOG
+    tools_to_bind = active_tools if active_tools else FULL_TOOL_CATALOG
 
-    return {
-        "tool_output": {
-            "status": "RECIPE_PREPARED",
-            "recipe": recipe,
-            "allowed_tools": allowed,
-            "target_symbols": symbols,
-        }
+    # 2. Initialize LLM and bind the filtered tools
+    llm = get_llm()
+    llm_with_tools = llm.bind_tools(tools_to_bind)
+
+    # 3. Construct messages with recipe guidance
+    messages = [
+        SystemMessage(content=f"Follow this workflow recipe carefully:\n{recipe}"),
+        HumanMessage(content=query)
+    ] + state.get("messages", [])
+
+    # 4. Invoke LLM
+    response = llm_with_tools.invoke(messages)
+    return {"messages": [response]}
+
+
+# Subgraph Construction
+guided_workflow = StateGraph(CodeNavigatorAgentState)
+
+guided_workflow.add_node("guided_llm", guided_llm_node)
+guided_workflow.add_node("guided_tools", ToolNode(FULL_TOOL_CATALOG))
+
+guided_workflow.add_edge(START, "guided_llm")
+
+# Conditional Edge: If LLM requested a tool, go to tool node; else end
+guided_workflow.add_conditional_edges(
+    "guided_llm",
+    tools_condition,  # Built-in LangGraph check for response.tool_calls
+    {
+        "tools": "guided_tools",
+        "__end__": END
     }
+)
+
+# Loop back from Tool execution to LLM for next decision
+guided_workflow.add_edge("guided_tools", "guided_llm")
 
 
-def react_fallback_node(state: CodeNavigatorAgentState) -> Dict[str, Any]:
-    """Node 2C: Prepares unconstrained tool loop for exploratory queries."""
-    allowed = state.get("allowed_tools", [])
-    symbols = state.get("target_symbols", [])
 
-    print(f"\n>> [LangGraph Node: ReAct Fallback (Open-Ended Exploration)]")
-    print(f"   Full tool catalog exposed ({len(allowed)} tools).")
-
-    return {
-        "tool_output": {
-            "status": "DISPATCHED_TO_REACT_LOOP",
-            "allowed_tools": allowed,
-            "target_symbols": symbols,
-        }
-    }
+# 2. The ReAct LLM Node
+def react_llm_node(state: CodeNavigatorAgentState):
+    """
+    Autonomous ReAct agent node with full tool access for open-ended queries.
+    """
+    query = state["query"]
+    
+    # Bind ALL tools (unconstrained)
+    llm_with_all_tools = get_llm().bind_tools(FULL_TOOL_CATALOG)
+    
+    # Autonomous Exploration Prompt
+    system_prompt = SystemMessage(
+        content=(
+            "You are CodeNavigator, an autonomous AI software architecture assistant.\n"
+            "The user asked an open-ended or exploratory codebase question.\n"
+            "Follow the ReAct framework:\n"
+            "1. Thought: Analyze what information is needed.\n"
+            "2. Action: Use graph or vector search tools to gather evidence.\n"
+            "3. Observation: Review tool outputs.\n"
+            "4. Final Answer: Synthesize a clear, accurate architectural response with file/line references.\n"
+            "Do not stop until you have gathered sufficient evidence to answer completely."
+        )
+    )
+    
+    messages = [system_prompt, HumanMessage(content=query)] + state.get("messages", [])
+    response = llm_with_all_tools.invoke(messages)
+    
+    return {"messages": [response]}
 
 
 def synthesizer_node(state: CodeNavigatorAgentState) -> Dict[str, Any]:
@@ -237,36 +297,54 @@ def route_by_strategy(state: CodeNavigatorAgentState) -> str:
 # -----------------------------------------------------------------------------
 
 def build_agentic_graph():
-    """Builds and compiles the CodeNavigator LangGraph StateGraph."""
     workflow = StateGraph(CodeNavigatorAgentState)
 
-    # 1. Add Nodes
+    # Add Nodes
     workflow.add_node("classifier", classifier_node)
     workflow.add_node("deterministic_1_shot", deterministic_1_shot_node)
-    workflow.add_node("guided_recipe", guided_recipe_node)
-    workflow.add_node("react_fallback", react_fallback_node)
+    
+    # Tier 2: Guided Recipe Loop
+    workflow.add_node("guided_llm", guided_llm_node)
+    workflow.add_node("guided_tools", ToolNode(FULL_TOOL_CATALOG))
+    
+    # Tier 3: ReAct Fallback Loop
+    workflow.add_node("react_llm", react_llm_node)
+    workflow.add_node("react_tools", ToolNode(FULL_TOOL_CATALOG))
+    
     workflow.add_node("synthesizer", synthesizer_node)
 
-    # 2. Add Edges
+    # 1. Start at Classifier
     workflow.add_edge(START, "classifier")
 
-    # 3. Conditional Edge from Classifier
+    # 2. Classifier conditionally routes across the 3 Tiers
     workflow.add_conditional_edges(
         "classifier",
         route_by_strategy,
         {
             "deterministic_1_shot": "deterministic_1_shot",
-            "guided_recipe": "guided_recipe",
-            "react_fallback": "react_fallback",
-        },
+            "guided_recipe": "guided_llm",
+            "react_fallback": "react_llm",      # <--- Routes to ReAct Fallback
+        }
     )
 
-    # 4. Connect execution nodes to synthesizer
-    workflow.add_edge("deterministic_1_shot", "synthesizer")
-    workflow.add_edge("guided_recipe", "synthesizer")
-    workflow.add_edge("react_fallback", "synthesizer")
+    # 3. Tier 2 Loop (Guided Recipe)
+    workflow.add_conditional_edges(
+        "guided_llm",
+        tools_condition,
+        {"tools": "guided_tools", "__end__": "synthesizer"}
+    )
+    workflow.add_edge("guided_tools", "guided_llm")
 
-    # 5. Connect synthesizer to END
+    # 4. Tier 3 Loop (ReAct Fallback)
+    workflow.add_conditional_edges(
+        "react_llm",
+        tools_condition,
+        {"tools": "react_tools", "__end__": "synthesizer"}
+    )
+    workflow.add_edge("react_tools", "react_llm")
+
+    # 5. Terminal Edges to Synthesizer -> END
+    workflow.add_edge("deterministic_1_shot", "synthesizer")
     workflow.add_edge("synthesizer", END)
 
     return workflow.compile()
