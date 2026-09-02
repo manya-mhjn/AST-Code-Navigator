@@ -337,3 +337,45 @@ def _extract_instance_attribute_usage(self, node, current_scope_id, edges):
                     "edge": "USES_INSTANCE_ATTRIBUTE",
                     "target": attr_n.text.decode("utf8")
                 })
+
+
+def get_llm(model_name: str = None, temperature: float = 0.0):
+    """
+    Returns an initialized LangChain Chat Model supporting tool-calling.
+    Auto-detects provider based on environment variables (Gemini, OpenAI, Anthropic, Groq).
+    """
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=model_name or "gemini-2.0-flash",
+            temperature=temperature,
+        )
+    elif os.environ.get("OPENAI_API_KEY"):
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=model_name or "gpt-4o-mini",
+            temperature=temperature,
+        )
+    elif os.environ.get("ANTHROPIC_API_KEY"):
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            model=model_name or "claude-3-5-sonnet-latest",
+            temperature=temperature,
+        )
+    elif os.environ.get("GROQ_API_KEY"):
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+            model=model_name or "llama-3.3-70b-versatile",
+            temperature=temperature,
+        )
+    else:
+        try:
+            from langchain_community.chat_models import ChatOllama
+            return ChatOllama(
+                model=model_name or "llama3.1",
+                temperature=temperature,
+            )
+        except Exception:
+            raise EnvironmentError(
+                "No LLM API key detected. Please set GEMINI_API_KEY, GOOGLE_API_KEY, or OPENAI_API_KEY in your .env file."
+            )
