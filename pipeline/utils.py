@@ -10,6 +10,7 @@ Consolidates logic that was duplicated across ASTNodeFetcher and ASTEdgeFetcher:
 
 import os
 import sys
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def extract_string(node) -> str:
@@ -339,43 +340,105 @@ def _extract_instance_attribute_usage(self, node, current_scope_id, edges):
                 })
 
 
+_CACHED_LLM_INSTANCES: Dict[Any, Any] = {}
+
+
 def get_llm(model_name: str = None, temperature: float = 0.0):
     """
     Returns an initialized LangChain Chat Model supporting tool-calling.
-    Auto-detects provider based on environment variables (Gemini, OpenAI, Anthropic, Groq).
+    Auto-detects provider based on environment variables.
+    Caches model instances in-memory to prevent reloading weights on every graph node.
     """
+    cache_key = (model_name, temperature)
+    if cache_key in _CACHED_LLM_INSTANCES:
+        return _CACHED_LLM_INSTANCES[cache_key]
+
+    # Silence Hugging Face Windows symlink and tokenizers warnings
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    # 1. Google Gemini (Fast & Cost-effective)
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
+        instance = ChatGoogleGenerativeAI(
             model=model_name or "gemini-2.0-flash",
             temperature=temperature,
         )
+    # 2. OpenAI (GPT-4o / GPT-4o-mini)
     elif os.environ.get("OPENAI_API_KEY"):
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
+        instance = ChatOpenAI(
             model=model_name or "gpt-4o-mini",
             temperature=temperature,
         )
+    # 3. Anthropic (Claude 3.5 Sonnet)
     elif os.environ.get("ANTHROPIC_API_KEY"):
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(
+        instance = ChatAnthropic(
             model=model_name or "claude-3-5-sonnet-latest",
             temperature=temperature,
         )
+    # 4. Groq (Ultra-fast open models like Llama-3.3-70b)
     elif os.environ.get("GROQ_API_KEY"):
         from langchain_groq import ChatGroq
-        return ChatGroq(
+        instance = ChatGroq(
             model=model_name or "llama-3.3-70b-versatile",
             temperature=temperature,
         )
-    else:
+    # 5. Local Ollama (if OLLAMA_HOST is set)
+    elif os.environ.get("OLLAMA_HOST") or os.environ.get("USE_LOCAL_OLLAMA"):
         try:
-            from langchain_community.chat_models import ChatOllama
-            return ChatOllama(
+            from langchain_ollama import ChatOllama
+            instance = ChatOllama(
                 model=model_name or "llama3.1",
                 temperature=temperature,
             )
-        except Exception:
+        except ImportError:
             raise EnvironmentError(
-                "No LLM API key detected. Please set GEMINI_API_KEY, GOOGLE_API_KEY, or OPENAI_API_KEY in your .env file."
+                "Ollama requested but 'langchain-ollama' is not installed. Install via: pip install langchain-ollama"
             )
+    # 6. Local Hugging Face / Transformers (In-process, zero API keys)
+    else:
+        try:
+            import warnings
+            warnings.filterwarnings("ignore", category=DeprecationWarning)
+            warnings.filterwarnings("ignore", category=UserWarning)
+
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, pipeline
+            from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
+
+            hf_model_id = model_name or os.environ.get("LOCAL_MODEL_NAME") or "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+            print(f"[Local LLM] Loading lightweight model '{hf_model_id}' into memory...")
+
+            tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
+            model = AutoModelForCausalLM.from_pretrained(
+                hf_model_id,
+                dtype=torch.float32,
+                device_map="auto" if torch.cuda.is_available() else None,
+                low_cpu_mem_usage=True,
+            )
+
+            # Configure generation parameters directly on model.generation_config
+            if hasattr(model, "generation_config") and model.generation_config:
+                model.generation_config.max_new_tokens = 256
+                model.generation_config.temperature = 0.1 if temperature is None else temperature
+                model.generation_config.do_sample = False
+                model.generation_config.max_length = None
+
+            pipe = pipeline(
+                "text-generation",
+                model=model,
+                tokenizer=tokenizer,
+                return_full_text=False,
+            )
+            hf_pipeline = HuggingFacePipeline(pipeline=pipe)
+            instance = ChatHuggingFace(llm=hf_pipeline)
+        except Exception as e:
+            raise EnvironmentError(
+                f"Failed to initialize local Hugging Face LLM model: {e}\n"
+                "Please configure GEMINI_API_KEY, OPENAI_API_KEY, or install local model dependencies."
+            )
+
+    _CACHED_LLM_INSTANCES[cache_key] = instance
+    return instance

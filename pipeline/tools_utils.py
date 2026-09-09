@@ -122,7 +122,7 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
         "recipe": None,
     },
     9: {
-        "name": "Environment & Configuration Audit",
+        "name": "Environment Variables & Configuration Audit (Config, Secrets, Env Constants)",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
         "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
@@ -204,7 +204,7 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
         "execution_type": ExecutionType.COMPOSITE,
         "expected_turns": 1,
-        "recommended_tools": ["search_codebase_semantic_with_context"],  # Runs: Weaviate Search -> Neo4j 1-hop context
+        "recommended_tools": ["search_codebase_semantic", "traverse_call_graph"],  # Runs: Weaviate Search -> Neo4j 1-hop context
         "patterns": [
             r"how does (this|the) .* feature work", r"step(-|\s)by(-|\s)step workflow for",
             r"where is the logic for .* implemented", r"explain (the )?business logic",
@@ -217,7 +217,7 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
         "execution_type": ExecutionType.COMPOSITE,
         "expected_turns": 1,
-        "recommended_tools": ["query_test_traceability_composite"],  # Runs: Neo4j (Test callers) -> Weaviate (Assertions)
+        "recommended_tools": ["query_test_traceability"],  # Runs: Neo4j (Test callers) -> Weaviate (Assertions)
         "patterns": [
             r"which test files? (actually )?invoke", r"tests? (do I need to|to) re(-|\s)?run",
             r"are there any .* lack(ing)? .* test", r"test coverage for"
