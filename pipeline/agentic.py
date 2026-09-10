@@ -46,7 +46,7 @@ from pipeline.tools import (
     tool_trace_taint_and_security_paths,
     tool_traverse_call_graph,
 )
-from pipeline.tools_utils import ExecutionStrategy, ExecutionType
+from pipeline.tools_utils import ExecutionStrategy
 from pipeline.utils import get_llm
 
 
@@ -59,7 +59,6 @@ class CodeNavigatorAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     intent: Optional[Dict[str, Any]]
     strategy: Optional[str]
-    execution_type: Optional[str]
     task_id: Optional[int]
     task_name: Optional[str]
     target_symbols: List[str]
@@ -85,20 +84,18 @@ def classifier_node(state: CodeNavigatorAgentState) -> Dict[str, Any]:
     strategy = intent["strategy"]
     task_id = intent.get("task_id")
     task_name = intent.get("task_name")
-    exec_type = intent.get("execution_type")
     turns = intent.get("expected_turns")
     symbols = intent.get("target_symbols", [])
 
     print(f"\n[Intent Routing Decision]")
     print(f"  * Task: #{task_id} ({task_name})")
-    print(f"  * Strategy: {strategy} (Type: {exec_type}, Expected Turns: {turns})")
+    print(f"  * Strategy: {strategy} (Expected Turns: {turns})")
     print(f"  * Extracted Symbols: {symbols}")
     print(f"  * Recommended Tools: {intent['recommended_tools']}")
 
     return {
         "intent": intent,
         "strategy": strategy,
-        "execution_type": exec_type,
         "task_id": task_id,
         "task_name": task_name,
         "target_symbols": symbols,
@@ -539,7 +536,6 @@ class CodeNavigatorAgent:
             "messages": [],
             "intent": None,
             "strategy": None,
-            "execution_type": None,
             "task_id": None,
             "task_name": None,
             "target_symbols": [],

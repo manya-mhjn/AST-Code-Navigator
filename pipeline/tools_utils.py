@@ -4,7 +4,6 @@ tools_utils.py — Data structures, enums, and task definitions for CodeNavigato
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -15,35 +14,6 @@ class ExecutionStrategy(str, Enum):
     REACT_FALLBACK = "REACT_FALLBACK"              # N Turns (Open-ended exploration)
 
 
-class ExecutionType(str, Enum):
-    ATOMIC = "atomic"        # Single direct DB query (e.g. Dead code, Module coupling)
-    COMPOSITE = "composite"  # Backend-orchestrated multi-step pipeline (e.g. Param lineage)
-    BRANCHING = "branching"  # Conditional decision-tree (e.g. Blast radius)
-    OPEN_ENDED = "open_ended"# Unconstrained ReAct loop
-
-
-@dataclass
-class IntentClassificationResult:
-    query: str
-    task_id: Optional[int]
-    task_name: str
-    strategy: ExecutionStrategy
-    execution_type: ExecutionType
-    expected_turns: int                  # 1, 2-3, or -1 (variable)
-    recommended_tools: List[str]         # Primary tool(s) to call
-    allowed_tools: List[str]             # Filtered tool subset for token efficiency
-    target_symbols: List[str]            # Extracted functions/classes/env vars
-    workflow_recipe: Optional[str]       # Injected into prompt for Tier 2 branching
-    confidence: float
-    explanation: str
-
-    def to_dict(self) -> Dict[str, Any]:
-        data = asdict(self)
-        data["strategy"] = self.strategy.value
-        data["execution_type"] = self.execution_type.value
-        return data
-
-
 # Canonical mapping for all 20 Code Intelligence Tasks
 TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     # =========================================================================
@@ -52,7 +22,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     1: {
         "name": "Upstream Call Tracing (Caller Analysis)",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["traverse_call_graph"],
         "patterns": [
@@ -64,7 +33,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     2: {
         "name": "Downstream Call Tracing (Callee / Dependency Analysis)",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["traverse_call_graph"],
         "patterns": [
@@ -76,7 +44,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     5: {
         "name": "Class Instance Attribute Mutability (self.)",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["query_variable_and_state_references"],
         "patterns": [
@@ -88,7 +55,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     6: {
         "name": "Inherited Class Attribute Resolution (super())",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["inspect_type_and_inheritance_hierarchy"],
         "patterns": [
@@ -100,7 +66,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     7: {
         "name": "Global & Module-Level Variable Audit",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["query_variable_and_state_references"],
         "patterns": [
@@ -112,7 +77,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     8: {
         "name": "Local Variable Initialization & Constant Default Audits",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["get_symbol_code_snippet"],
         "patterns": [
@@ -124,7 +88,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     9: {
         "name": "Environment Variables & Configuration Audit (Config, Secrets, Env Constants)",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["query_variable_and_state_references"],
         "patterns": [
@@ -138,7 +101,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     12: {
         "name": "Module & Architecture Coupling",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["analyze_architecture_coupling"],
         "patterns": [
@@ -150,7 +112,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     13: {
         "name": "Dead Code & Orphan Identification",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["detect_orphan_and_dead_code"],
         "patterns": [
@@ -162,7 +123,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     17: {
         "name": "Type & Class Hierarchy Inspection",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["inspect_type_and_inheritance_hierarchy"],
         "patterns": [
@@ -174,7 +134,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     20: {
         "name": "API Contract & Interface Surface",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.ATOMIC,
         "expected_turns": 1,
         "recommended_tools": ["query_api_endpoints"],
         "patterns": [
@@ -190,7 +149,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     4: {
         "name": "Function Parameter & Argument Lineage",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.COMPOSITE,
         "expected_turns": 1,
         "recommended_tools": ["trace_parameter_lineage"],  # Runs: Neo4j (Callers) -> Weaviate (Caller Snippets)
         "patterns": [
@@ -202,7 +160,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     16: {
         "name": "Business Logic & Concept Explanation",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.COMPOSITE,
         "expected_turns": 1,
         "recommended_tools": ["search_codebase_semantic", "traverse_call_graph"],  # Runs: Weaviate Search -> Neo4j 1-hop context
         "patterns": [
@@ -215,7 +172,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     19: {
         "name": "Test Coverage & Traceability",
         "strategy": ExecutionStrategy.DETERMINISTIC_1_SHOT,
-        "execution_type": ExecutionType.COMPOSITE,
         "expected_turns": 1,
         "recommended_tools": ["query_test_traceability"],  # Runs: Neo4j (Test callers) -> Weaviate (Assertions)
         "patterns": [
@@ -231,7 +187,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     3: {
         "name": "Blast Radius & Impact Analysis",
         "strategy": ExecutionStrategy.GUIDED_RECIPE,
-        "execution_type": ExecutionType.BRANCHING,
         "expected_turns": 2,
         "recommended_tools": ["calculate_blast_radius", "query_api_endpoints", "query_test_traceability"],
         "patterns": [
@@ -247,7 +202,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     10: {
         "name": "Data Flow & Variable Expression Lineage",
         "strategy": ExecutionStrategy.GUIDED_RECIPE,
-        "execution_type": ExecutionType.BRANCHING,
         "expected_turns": 2,
         "recommended_tools": ["get_symbol_code_snippet", "traverse_call_graph"],
         "patterns": [
@@ -263,7 +217,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     11: {
         "name": "State Mutation & Reassignment Tracing",
         "strategy": ExecutionStrategy.GUIDED_RECIPE,
-        "execution_type": ExecutionType.BRANCHING,
         "expected_turns": 2,
         "recommended_tools": ["get_symbol_code_snippet", "query_variable_and_state_references"],
         "patterns": [
@@ -279,7 +232,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     14: {
         "name": "Security & Vulnerability Path Tracking (Taint Analysis)",
         "strategy": ExecutionStrategy.GUIDED_RECIPE,
-        "execution_type": ExecutionType.BRANCHING,
         "expected_turns": 3,
         "recommended_tools": ["trace_taint_and_security_paths", "get_symbol_code_snippet", "traverse_call_graph"],
         "patterns": [
@@ -295,7 +247,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     15: {
         "name": "Error Handling & Exception Propagation",
         "strategy": ExecutionStrategy.GUIDED_RECIPE,
-        "execution_type": ExecutionType.BRANCHING,
         "expected_turns": 2,
         "recommended_tools": ["get_symbol_code_snippet", "traverse_call_graph"],
         "patterns": [
@@ -311,7 +262,6 @@ TASK_DEFINITIONS: Dict[int, Dict[str, Any]] = {
     18: {
         "name": "Performance & Bottleneck Spotting",
         "strategy": ExecutionStrategy.GUIDED_RECIPE,
-        "execution_type": ExecutionType.BRANCHING,
         "expected_turns": 2,
         "recommended_tools": ["get_symbol_code_snippet", "traverse_call_graph"],
         "patterns": [

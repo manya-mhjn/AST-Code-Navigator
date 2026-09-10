@@ -27,8 +27,6 @@ from pipeline.graph_traversal import CallGraphTraversal, traverse_call_graph
 from pipeline.neo4j_sink import Neo4jCodeGraphIngestor
 from pipeline.tools_utils import (
     ExecutionStrategy,
-    ExecutionType,
-    IntentClassificationResult,
     TASK_DEFINITIONS,
 )
 from pipeline.weaviate_sink import WeaviateCloudCodeDB
@@ -106,7 +104,7 @@ class CodeIntentClassifier:
             lines.append(f"- Task #{task_id:02d}: {task['name']}")
         return "\n".join(lines)
 
-    def classify(self, query: str) -> IntentClassificationResult:
+    def classify(self, query: str) -> Dict[str, Any]:
         """
         Presents all 20 Task Definitions to the LLM to classify the user's intent.
         """
@@ -258,27 +256,26 @@ class CodeIntentClassifier:
 
             if task_id and task_id in self.task_defs:
                 task_info = self.task_defs[task_id]
-                return IntentClassificationResult(
-                    query=query,
-                    task_id=task_id,
-                    task_name=task_info["name"],
-                    strategy=task_info["strategy"],
-                    execution_type=task_info["execution_type"],
-                    expected_turns=task_info["expected_turns"],
-                    recommended_tools=task_info["recommended_tools"],
-                    allowed_tools=self._filter_allowed_tools(task_info),
-                    target_symbols=symbols,
-                    workflow_recipe=task_info.get("recipe"),
-                    confidence=confidence,
-                    explanation=f"LLM Classification: {reasoning}",
-                )
+                return {
+                    "query": query,
+                    "task_id": task_id,
+                    "task_name": task_info["name"],
+                    "strategy": task_info["strategy"].value if hasattr(task_info["strategy"], "value") else str(task_info["strategy"]),
+                    "expected_turns": task_info["expected_turns"],
+                    "recommended_tools": task_info["recommended_tools"],
+                    "allowed_tools": self._filter_allowed_tools(task_info),
+                    "target_symbols": symbols,
+                    "workflow_recipe": task_info.get("recipe"),
+                    "confidence": confidence,
+                    "explanation": f"LLM Classification: {reasoning}",
+                }
             else:
                 return self._react_fallback(query, symbols, reasoning=reasoning)
 
         except Exception as e:
             return self._react_fallback(query, [], reasoning=f"LLM classification exception ({e}). Defaulted to ReAct loop.")
 
-    def _react_fallback(self, query: str, symbols: List[str], reasoning: str = "Open-ended exploration") -> IntentClassificationResult:
+    def _react_fallback(self, query: str, symbols: List[str], reasoning: str = "Open-ended exploration") -> Dict[str, Any]:
         all_tool_names = [
             "tool_traverse_call_graph", "tool_calculate_blast_radius",
             "tool_inspect_type_and_inheritance_hierarchy", "tool_query_variable_and_state_references",
@@ -287,20 +284,19 @@ class CodeIntentClassifier:
             "tool_query_api_endpoints", "tool_search_codebase_semantic",
             "tool_get_symbol_code_snippet", "tool_trace_parameter_lineage"
         ]
-        return IntentClassificationResult(
-            query=query,
-            task_id=None,
-            task_name="Open-Ended / Exploratory Query",
-            strategy=ExecutionStrategy.REACT_FALLBACK,
-            execution_type=ExecutionType.OPEN_ENDED,
-            expected_turns=-1,
-            recommended_tools=["tool_search_codebase_semantic", "tool_traverse_call_graph"],
-            allowed_tools=all_tool_names,
-            target_symbols=symbols,
-            workflow_recipe=None,
-            confidence=0.60,
-            explanation=f"Routed to ReAct loop: {reasoning}",
-        )
+        return {
+            "query": query,
+            "task_id": None,
+            "task_name": "Open-Ended / Exploratory Query",
+            "strategy": ExecutionStrategy.REACT_FALLBACK.value,
+            "expected_turns": -1,
+            "recommended_tools": ["tool_search_codebase_semantic", "tool_traverse_call_graph"],
+            "allowed_tools": all_tool_names,
+            "target_symbols": symbols,
+            "workflow_recipe": None,
+            "confidence": 0.60,
+            "explanation": f"Routed to ReAct loop: {reasoning}",
+        }
 
     def _filter_allowed_tools(self, task_info: Dict[str, Any]) -> List[str]:
         tools = list(task_info["recommended_tools"])
@@ -318,7 +314,7 @@ class CodeIntentClassifier:
 def classify_intent(query: str) -> Dict[str, Any]:
     """Classifies a user developer query into execution tiers and recommended tools."""
     classifier = CodeIntentClassifier()
-    return classifier.classify(query).to_dict()
+    return classifier.classify(query)
 
 
 # -----------------------------------------------------------------------------
