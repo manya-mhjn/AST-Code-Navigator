@@ -357,11 +357,12 @@ def get_llm(model_name: str = None, temperature: float = 0.0):
     os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-    # 1. Google Gemini (Fast & Cost-effective)
+    # 1. Google Gemini (Quota-Aware Multi-Model Router across 3.6/3.7/3.8 Flash)
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        instance = ChatGoogleGenerativeAI(
-            model=model_name or "gemini-2.0-flash",
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        from pipeline.gemini_router import GeminiRoutedChatModel
+        instance = GeminiRoutedChatModel(
+            api_key=api_key,
             temperature=temperature,
         )
     # 2. OpenAI (GPT-4o / GPT-4o-mini)
@@ -414,15 +415,15 @@ def get_llm(model_name: str = None, temperature: float = 0.0):
             tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
             model = AutoModelForCausalLM.from_pretrained(
                 hf_model_id,
-                dtype=torch.float32,
+                torch_dtype="auto",
                 device_map="auto" if torch.cuda.is_available() else None,
                 low_cpu_mem_usage=True,
             )
 
             # Configure generation parameters directly on model.generation_config
             if hasattr(model, "generation_config") and model.generation_config:
-                model.generation_config.max_new_tokens = 256
-                model.generation_config.temperature = 0.1 if temperature is None else temperature
+                model.generation_config.max_new_tokens = 768
+                model.generation_config.temperature = 0.0
                 model.generation_config.do_sample = False
                 model.generation_config.max_length = None
 

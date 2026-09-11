@@ -749,7 +749,7 @@ def tool_search_codebase_semantic(
         return {"error": "Weaviate client unavailable", "query": query}
 
     try:
-        results = wv.hybrid_search(query, limit=limit)
+        results = wv.search_code(query, limit=limit)
         return {
             "query": query,
             "results_count": len(results),
@@ -759,7 +759,7 @@ def tool_search_codebase_semantic(
                     "type": r.get("chunk_type"),
                     "file_path": r.get("file_path"),
                     "docstring": r.get("docstring"),
-                    "code_snippet": r.get("code")[:300] + "..." if r.get("code") and len(r.get("code")) > 300 else r.get("code"),
+                    "snippet": (r.get("content") or "")[:300] + "..." if r.get("content") and len(r.get("content")) > 300 else (r.get("content") or ""),
                 }
                 for r in results
             ],

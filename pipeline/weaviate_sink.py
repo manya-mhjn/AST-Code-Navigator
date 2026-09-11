@@ -42,9 +42,17 @@ class WeaviateCloudCodeDB:
         )
         self.collection_name = "CodeChunk"
 
-        # Local embedding model (converts code into 384-dim vectors)
-        self.encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-        print("Connected to Weaviate Cloud successfully.")
+        # Embedding model (Gemini Embedding Router across models 1 & 2, or local fallback)
+        gemini_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if gemini_key:
+            from pipeline.gemini_router import GeminiEmbeddingRouter
+            self.gemini_router = GeminiEmbeddingRouter(api_key=gemini_key)
+            self.encoder = None
+            print("Connected to Weaviate Cloud (Embedding: Gemini Embedding Router [1 & 2]).")
+        else:
+            self.gemini_router = None
+            self.encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+            print("Connected to Weaviate Cloud (Embedding: SentenceTransformer local).")
 
     def close(self):
         self.client.close()
@@ -73,16 +81,26 @@ class WeaviateCloudCodeDB:
         )
         print(f"Collection '{self.collection_name}' created on Weaviate Cloud.")
 
+    def _encode_text(self, text: str) -> list[float]:
+        if self.gemini_router:
+            return self.gemini_router.embed_query(text)
+        return self.encoder.encode(text).tolist()
+
+    def _encode_batch(self, texts: list[str]) -> list[list[float]]:
+        if self.gemini_router:
+            return self.gemini_router.embed_documents(texts)
+        return self.encoder.encode(texts, show_progress_bar=False).tolist()
+
     def insert_code_chunks(self, documents: list):
         """
-        Generates vector embeddings locally and batch uploads them to Weaviate Cloud.
+        Generates vector embeddings and batch uploads them to Weaviate Cloud.
         """
         collection = self.client.collections.get(self.collection_name)
 
         contents = [doc.page_content for doc in documents]
 
         print(f"Generating vectors for {len(documents)} code chunks...")
-        embeddings = self.encoder.encode(contents, show_progress_bar=False).tolist()
+        embeddings = self._encode_batch(contents)
 
         objects_to_insert = []
         for i, doc in enumerate(documents):
@@ -114,20 +132,37 @@ class WeaviateCloudCodeDB:
 
     def search_code(self, query_text: str, limit: int = 5):
         """
-        Encodes query string into a vector and searches Weaviate Cloud.
+        Performs hybrid (dense vector + BM25 keyword) search on Weaviate Cloud.
         """
         collection = self.client.collections.get(self.collection_name)
+        objs = []
 
-        query_vector = self.encoder.encode(query_text).tolist()
+        # 1. Try Hybrid Search (dense vector + BM25 keywords)
+        try:
+            query_vector = self._encode_text(query_text)
+            response = collection.query.hybrid(
+                query=query_text,
+                vector=query_vector,
+                limit=limit,
+                alpha=0.5,
+            )
+            objs = response.objects
+        except Exception:
+            objs = []
 
-        response = collection.query.near_vector(
-            near_vector=query_vector,
-            limit=limit,
-            return_metadata=MetadataQuery(distance=True)
-        )
+        # 2. Fallback to BM25 keyword search if hybrid returns 0
+        if not objs:
+            try:
+                response = collection.query.bm25(
+                    query=query_text,
+                    limit=limit,
+                )
+                objs = response.objects
+            except Exception:
+                objs = []
 
         results = []
-        for obj in response.objects:
+        for obj in objs:
             results.append({
                 "node_id": obj.properties.get("node_id"),
                 "file_path": obj.properties.get("file_path"),

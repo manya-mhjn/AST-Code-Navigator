@@ -104,6 +104,7 @@ class BlackboardState(TypedDict):
     # Stage 2: Hierarchical Plan State
     plan: List[Dict[str, Any]]
     current_step_index: int
+    replan_count: int                      # Max loop safeguard
 
     # Stage 3 & 4: Evidence & Blackboard Accumulation
     current_tool_output: Optional[Any]
@@ -154,92 +155,11 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
             return sym if sym else None
         return None
 
-    # Task #01: Upstream Call Tracing (Caller Analysis)
-    sym = _extract_symbol(r"(?:who calls|callers? of|where is)\s+([a-zA-Z0-9_\.]+)")
-    if sym or "incoming call" in q_lower:
-        target = sym or query.split()[-1].strip("()?'\"")
-        print(f"  ⚡ [Fast-Path #01: Upstream Callers] Traversal for '{target}'")
-        res = tool_traverse_call_graph.invoke({"target_symbol": target, "direction": "incoming", "max_depth": 1})
-        raw_calls = res.get("raw_calls", [])
-        if raw_calls:
-            ans = f"Incoming Callers for **`{target}()`** ({len(raw_calls)} call site(s) found):\n\n" + "\n".join(
-                [f"  - `{c.get('caller_name')}()` in `{c.get('caller_id', '').split('::')[0]}` (Line {c.get('line')})" for c in raw_calls]
-            )
-        else:
-            ans = f"No incoming callers found invoking **`{target}()`** in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # Task #02: Downstream Call Tracing (Callee / Dependency Analysis)
-    sym = _extract_symbol(r"(?:what does|callees? of|functions? does)\s+([a-zA-Z0-9_\.]+)\s+(?:call|invoke|execute)")
-    if sym or "outgoing call" in q_lower:
-        target = sym or query.split()[-1].strip("()?'\"")
-        print(f"  ⚡ [Fast-Path #02: Downstream Callees] Traversal for '{target}'")
-        res = tool_traverse_call_graph.invoke({"target_symbol": target, "direction": "outgoing", "max_depth": 1})
-        paths = res.get("paths", [])
-        if paths:
-            ans = f"Outgoing Callees for **`{target}()`**:\n\n" + "\n".join(
-                [f"  - Invokes `{p.get('execution_chain')}` (Depth {p.get('depth')})" for p in paths]
-            )
-        else:
-            ans = f"No outgoing function calls found initiated by **`{target}()`** in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # Task #05: Class Instance Attribute Mutability (self.)
-    sym = _extract_symbol(r"self\.([a-zA-Z0-9_]+)") or _extract_symbol(r"instance attribute\s+([a-zA-Z0-9_]+)")
-    if sym or "self." in query:
-        target = sym or query.split("self.")[-1].split()[0].strip("?'\"")
-        print(f"  ⚡ [Fast-Path #05: Instance Attribute Mutability] Audit for 'self.{target}'")
-        res = tool_query_variable_and_state_references.invoke({"symbol_name": target, "variable_type": "instance_attr"})
-        refs = res.get("references", [])
-        if refs:
-            ans = f"Instance attribute **`self.{target}`** is modified/referenced in {len(refs)} method(s):\n\n" + "\n".join(
-                [f"  - `{r.get('function_name')}` in `{r.get('file_path')}`" for r in refs]
-            )
-        else:
-            ans = f"No references or mutations of **`self.{target}`** were found in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # Task #06: Inherited Class Attribute Resolution (super())
-    sym = _extract_symbol(r"(?:inherited from|parent class of|super\(\))\s+([a-zA-Z0-9_]+)")
-    if sym or "super()" in query or "inherited attribute" in q_lower:
-        target = sym or query.split()[-1].strip("?'\"")
-        print(f"  ⚡ [Fast-Path #06: Inherited Attributes] Hierarchy resolution for '{target}'")
-        res = tool_inspect_type_and_inheritance_hierarchy.invoke({"symbol_name": target})
-        ans = f"Inherited Class & Attribute Hierarchy for **`{target}`**:\n\n{json.dumps(res, indent=2)}"
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # Task #07: Global & Module-Level Variable Audit
-    sym = _extract_symbol(r"(?:global variable|module(-|\s)level (?:variable|constant))\s+([a-zA-Z0-9_]+)")
-    if sym or "global variable" in q_lower or "module constant" in q_lower:
-        target = sym or query.split()[-1].strip("?'\"")
-        print(f"  ⚡ [Fast-Path #07: Global Variables] Audit for '{target}'")
-        res = tool_query_variable_and_state_references.invoke({"symbol_name": target, "variable_type": "global_variable"})
-        refs = res.get("references", [])
-        if refs:
-            ans = f"Global variable **`{target}`** is referenced at {len(refs)} location(s):\n\n" + "\n".join(
-                [f"  - `{r.get('function_name')}` in `{r.get('file_path')}`" for r in refs]
-            )
-        else:
-            ans = f"No references or declarations of global variable **`{target}`** found in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # Task #08: Local Variable Initialization & Constant Default Audits (Snippets)
-    sym = _extract_symbol(r"(?:default (?:timeout|value|parameter)|initial value|code snippet) of\s+([a-zA-Z0-9_\.]+)")
-    if sym or "default timeout" in q_lower or "code snippet of" in q_lower:
-        target = sym or query.split()[-1].strip("?'\"")
-        print(f"  ⚡ [Fast-Path #08: Local Defaults / Snippet] Lookup for '{target}'")
-        res = tool_get_symbol_code_snippet.invoke({"symbol_name": target})
-        if res.get("snippet"):
-            ans = f"Code snippet for **`{target}`** in `{res.get('file_path')}`:\n\n```python\n{res.get('snippet')}\n```"
-        else:
-            ans = f"No code definition or snippet found for symbol **`{target}`** in the codebase."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # Task #09: Environment Variables & Configuration Audit
-    env_match = re.search(r"\b([A-Z0-9_]{3,}_(?:KEY|SECRET|TOKEN|URL|PORT|HOST|ENV|CONFIG|PWD|PASSWORD|FILE|DIR))\b", query)
+    # 1. Task #09: Environment Variables & Configuration Audit (Check First for Env Constants)
+    env_match = re.search(r"\b([A-Z0-9_]{3,}_(?:KEY|SECRET|TOKEN|URL|PORT|HOST|ENV|CONFIG|PWD|PASSWORD|FILE|DIR))", query)
     if env_match or "environment variable" in q_lower or "os.getenv" in q_lower:
         target = env_match.group(1) if env_match else query.split()[-1].strip("?'\"")
-        print(f"  ⚡ [Fast-Path #09: Env Vars & Secrets] Audit for '{target}'")
+        print(f"  [*] [Fast-Path #09: Env Vars & Secrets] Audit for '{target}'")
         res = tool_query_variable_and_state_references.invoke({"symbol_name": target, "variable_type": "env_var"})
         refs = res.get("references", [])
         if refs:
@@ -250,9 +170,92 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
             ans = f"No references or reads of environment variable **`{target}`** were found in the codebase graph."
         return {"fast_path_hit": True, "fast_path_result": ans}
 
-    # Task #12: Module & Architecture Coupling
+    # 2. Task #01: Upstream Call Tracing (Caller Analysis)
+    sym = _extract_symbol(r"(?:who calls|callers? of|where is\s+([a-zA-Z0-9_\.]+)\s+called)")
+    if not sym and ("who calls" in q_lower or "callers of" in q_lower):
+        sym = query.split()[-1].strip("()?'\"")
+    if sym or "incoming call" in q_lower:
+        target = sym or query.split()[-1].strip("()?'\"")
+        print(f"  [*] [Fast-Path #01: Upstream Callers] Traversal for '{target}'")
+        res = tool_traverse_call_graph.invoke({"target_symbol": target, "direction": "incoming", "max_depth": 1})
+        raw_calls = res.get("raw_calls", [])
+        if raw_calls:
+            ans = f"Incoming Callers for **`{target}()`** ({len(raw_calls)} call site(s) found):\n\n" + "\n".join(
+                [f"  - `{c.get('caller_name')}()` in `{c.get('caller_id', '').split('::')[0]}` (Line {c.get('line')})" for c in raw_calls]
+            )
+        else:
+            ans = f"No incoming callers found invoking **`{target}()`** in the codebase graph."
+        return {"fast_path_hit": True, "fast_path_result": ans}
+
+    # 3. Task #02: Downstream Call Tracing (Callee / Dependency Analysis)
+    sym = _extract_symbol(r"(?:what does|callees? of|functions? does)\s+([a-zA-Z0-9_\.]+)\s+(?:call|invoke|execute)")
+    if sym or "outgoing call" in q_lower:
+        target = sym or query.split()[-1].strip("()?'\"")
+        print(f"  [*] [Fast-Path #02: Downstream Callees] Traversal for '{target}'")
+        res = tool_traverse_call_graph.invoke({"target_symbol": target, "direction": "outgoing", "max_depth": 1})
+        paths = res.get("paths", [])
+        if paths:
+            ans = f"Outgoing Callees for **`{target}()`**:\n\n" + "\n".join(
+                [f"  - Invokes `{p.get('execution_chain')}` (Depth {p.get('depth')})" for p in paths]
+            )
+        else:
+            ans = f"No outgoing function calls found initiated by **`{target}()`** in the codebase graph."
+        return {"fast_path_hit": True, "fast_path_result": ans}
+
+    # 4. Task #05: Class Instance Attribute Mutability (self.)
+    sym = _extract_symbol(r"self\.([a-zA-Z0-9_]+)") or _extract_symbol(r"instance attribute\s+([a-zA-Z0-9_]+)")
+    if sym or "self." in query:
+        target = sym or query.split("self.")[-1].split()[0].strip("?'\"")
+        print(f"  [*] [Fast-Path #05: Instance Attribute Mutability] Audit for 'self.{target}'")
+        res = tool_query_variable_and_state_references.invoke({"symbol_name": target, "variable_type": "instance_attr"})
+        refs = res.get("references", [])
+        if refs:
+            ans = f"Instance attribute **`self.{target}`** is modified/referenced in {len(refs)} method(s):\n\n" + "\n".join(
+                [f"  - `{r.get('function_name')}` in `{r.get('file_path')}`" for r in refs]
+            )
+        else:
+            ans = f"No references or mutations of **`self.{target}`** were found in the codebase graph."
+        return {"fast_path_hit": True, "fast_path_result": ans}
+
+    # 5. Task #06: Inherited Class Attribute Resolution (super())
+    sym = _extract_symbol(r"(?:inherited from|parent class of|super\(\))\s+([a-zA-Z0-9_]+)")
+    if sym or "super()" in query or "inherited attribute" in q_lower:
+        target = sym or query.split()[-1].strip("?'\"")
+        print(f"  [*] [Fast-Path #06: Inherited Attributes] Hierarchy resolution for '{target}'")
+        res = tool_inspect_type_and_inheritance_hierarchy.invoke({"symbol_name": target})
+        ans = f"Inherited Class & Attribute Hierarchy for **`{target}`**:\n\n{json.dumps(res, indent=2)}"
+        return {"fast_path_hit": True, "fast_path_result": ans}
+
+    # 6. Task #07: Global & Module-Level Variable Audit
+    sym = _extract_symbol(r"(?:global variable|module(-|\s)level (?:variable|constant))\s+([a-zA-Z0-9_]+)")
+    if sym or "global variable" in q_lower or "module constant" in q_lower:
+        target = sym or query.split()[-1].strip("?'\"")
+        print(f"  [*] [Fast-Path #07: Global Variables] Audit for '{target}'")
+        res = tool_query_variable_and_state_references.invoke({"symbol_name": target, "variable_type": "global_variable"})
+        refs = res.get("references", [])
+        if refs:
+            ans = f"Global variable **`{target}`** is referenced at {len(refs)} location(s):\n\n" + "\n".join(
+                [f"  - `{r.get('function_name')}` in `{r.get('file_path')}`" for r in refs]
+            )
+        else:
+            ans = f"No references or declarations of global variable **`{target}`** found in the codebase graph."
+        return {"fast_path_hit": True, "fast_path_result": ans}
+
+    # 7. Task #08: Local Variable Initialization & Constant Default Audits (Snippets)
+    sym = _extract_symbol(r"(?:default (?:timeout|value|parameter)|initial value|code snippet) of\s+([a-zA-Z0-9_\.]+)")
+    if sym or "default timeout" in q_lower or "code snippet of" in q_lower:
+        target = sym or query.split()[-1].strip("?'\"")
+        print(f"  [*] [Fast-Path #08: Local Defaults / Snippet] Lookup for '{target}'")
+        res = tool_get_symbol_code_snippet.invoke({"symbol_name": target})
+        if res.get("snippet"):
+            ans = f"Code snippet for **`{target}`** in `{res.get('file_path')}`:\n\n```python\n{res.get('snippet')}\n```"
+        else:
+            ans = f"No code definition or snippet found for symbol **`{target}`** in the codebase."
+        return {"fast_path_hit": True, "fast_path_result": ans}
+
+    # 8. Task #12: Module & Architecture Coupling
     if any(k in q_lower for k in ["circular import", "circular dependencies", "module coupling", "architectural boundary"]):
-        print(f"  ⚡ [Fast-Path #12: Architecture Coupling] Analyzing circular imports & module edges...")
+        print(f"  [*] [Fast-Path #12: Architecture Coupling] Analyzing circular imports & module edges...")
         res = tool_analyze_architecture_coupling.invoke({})
         cycles = res.get("circular_dependencies", [])
         if cycles:
@@ -261,9 +264,9 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
             ans = "No circular imports or high module coupling violations were detected in the codebase graph."
         return {"fast_path_hit": True, "fast_path_result": ans}
 
-    # Task #13: Dead Code & Orphan Identification
+    # 9. Task #13: Dead Code & Orphan Identification
     if any(k in q_lower for k in ["dead code", "orphan function", "unused function", "uncalled function", "orphan class"]):
-        print(f"  ⚡ [Fast-Path #13: Dead Code Detection] Querying uncalled functions (0 incoming callers)...")
+        print(f"  [*] [Fast-Path #13: Dead Code Detection] Querying uncalled functions (0 incoming callers)...")
         res = tool_detect_orphan_and_dead_code.invoke({})
         orphans = res.get("orphans", [])
         if orphans:
@@ -274,11 +277,11 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
             ans = "No orphan or dead code functions were identified in the ingested codebase graph."
         return {"fast_path_hit": True, "fast_path_result": ans}
 
-    # Task #17: Type & Class Hierarchy Inspection
+    # 10. Task #17: Type & Class Hierarchy Inspection
     sym = _extract_symbol(r"(?:classes inherit from|subclasses of|class hierarchy of)\s+([a-zA-Z0-9_]+)")
     if sym or "class hierarchy" in q_lower or "subclasses of" in q_lower:
         target = sym or query.split()[-1].strip("?'\"")
-        print(f"  ⚡ [Fast-Path #17: Class Hierarchy] Inspecting subclasses of '{target}'")
+        print(f"  [*] [Fast-Path #17: Class Hierarchy] Inspecting subclasses of '{target}'")
         res = tool_inspect_type_and_inheritance_hierarchy.invoke({"symbol_name": target})
         subclasses = res.get("subclasses", [])
         if subclasses:
@@ -289,9 +292,9 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
             ans = f"No subclasses inheriting from **`{target}`** found in the codebase graph."
         return {"fast_path_hit": True, "fast_path_result": ans}
 
-    # Task #20: API Contract & Interface Surface
+    # 11. Task #20: API Contract & Interface Surface
     if any(k in q_lower for k in ["rest endpoint", "api endpoint", "what routes", "http method", "api surface"]):
-        print(f"  ⚡ [Fast-Path #20: API Endpoints] Querying public HTTP routes & handlers...")
+        print(f"  [*] [Fast-Path #20: API Endpoints] Querying public HTTP routes & handlers...")
         res = tool_query_api_endpoints.invoke({})
         endpoints = res.get("endpoints", [])
         if endpoints:
@@ -303,7 +306,7 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
         return {"fast_path_hit": True, "fast_path_result": ans}
 
     # Fall-through to Stage 2: Hierarchical Planner
-    print("  ⚪ [Fast-Path Miss] Multi-step query detected. Delegating to Stage 2: Hierarchical Planner.")
+    print("  [-] [Fast-Path Miss] Multi-step query detected. Delegating to Stage 2: Hierarchical Planner.")
     return {"fast_path_hit": False, "fast_path_result": None}
 
 
@@ -325,12 +328,23 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
     query = state["query"]
     facts = state.get("blackboard_facts", [])
     negative_constraints = state.get("negative_constraints", [])
+    replan_count = state.get("replan_count", 0) + 1
     is_adaptive = len(negative_constraints) > 0 or len(facts) > 0
 
     mode_label = "Adaptive Re-Planning (Dead-End Recovery)" if is_adaptive else "Initial Decomposition"
-    print(f"\n>> [Stage 2: Hierarchical Planner] Mode: {mode_label}")
+    print(f"\n>> [Stage 2: Hierarchical Planner] Mode: {mode_label} (Replan Iteration: {replan_count}/2)")
     if negative_constraints:
-        print(f"   🛑 Negative Constraints Active: {negative_constraints}")
+        print(f"   [!] Negative Constraints Active: {negative_constraints}")
+
+    # Maximum replan safeguard: if replan_count > 2, do not loop
+    if replan_count > 2:
+        print("   [!] Max replan iterations reached. Proceeding directly to final synthesis.")
+        return {
+            "plan": [],
+            "current_step_index": 0,
+            "replan_count": replan_count,
+            "consecutive_failures": 0,
+        }
 
     system_prompt = (
         "You are CodeNavigator's Hierarchical Software Architecture Planner.\n"
@@ -379,13 +393,14 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
             }
         ]
 
-    print(f"   📋 Generated Plan ({len(steps)} steps):")
+    print(f"   [+] Generated Plan ({len(steps)} steps):")
     for s in steps:
         print(f"      Step {s['step_id']}: [{s['tool_name']}] Hypothesis: {s['hypothesis']}")
 
     return {
         "plan": steps,
         "current_step_index": 0,
+        "replan_count": replan_count,
         "consecutive_failures": 0,
     }
 
@@ -397,6 +412,9 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
 def step_executor_node(state: BlackboardState) -> Dict[str, Any]:
     plan = state.get("plan", [])
     idx = state.get("current_step_index", 0)
+    if not plan or idx >= len(plan):
+        return {"current_tool_output": None}
+
     current_step = plan[idx]
     tool_name = current_step["tool_name"]
     tool_args = current_step.get("tool_args", {})
@@ -424,6 +442,9 @@ def step_executor_node(state: BlackboardState) -> Dict[str, Any]:
 def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
     plan = state.get("plan", [])
     idx = state.get("current_step_index", 0)
+    if not plan or idx >= len(plan):
+        return {"plan": plan, "current_step_index": idx}
+
     current_step = plan[idx]
     tool_output = state.get("current_tool_output")
     failure_count = state.get("consecutive_failures", 0)
@@ -439,7 +460,7 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
             tool_output.get("paths")
             or tool_output.get("raw_calls")
             or tool_output.get("references")
-            or tool_output.get("results")
+            or (isinstance(tool_output.get("results"), list) and len(tool_output["results"]) > 0)
             or tool_output.get("snippet")
         ):
             has_data = True
@@ -448,7 +469,7 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
 
     # CASE A: Evidence Found (> 0 matches)
     if has_data and "error" not in tool_output:
-        print(f"   ✅ [CASE A: Evidence Verified] Step {current_step['step_id']} satisfied acceptance criteria.")
+        print(f"   [+] [CASE A: Evidence Verified] Step {current_step['step_id']} satisfied acceptance criteria.")
 
         if "raw_calls" in tool_output and tool_output["raw_calls"]:
             fact_summary = f"Callers of '{current_step.get('tool_args', {}).get('target_symbol', '')}': " + ", ".join(
@@ -458,6 +479,14 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
             fact_summary = f"References for '{tool_output.get('symbol', '')}': " + ", ".join(
                 [f"Accessed by {r.get('function_name')} in {r.get('file_path')}" for r in tool_output["references"]]
             )
+        elif "results" in tool_output and tool_output["results"]:
+            snippets = []
+            for r in tool_output["results"][:3]:
+                name = r.get("name") or "Code Chunk"
+                fp = r.get("file_path", "")
+                snip = (r.get("snippet") or "").strip()
+                snippets.append(f"  - Symbol: `{name}` in `{fp}`:\n    ```python\n    {snip[:250]}\n    ```")
+            fact_summary = f"Codebase Implementation Evidence ({len(tool_output['results'])} matches found):\n" + "\n".join(snippets)
         else:
             fact_summary = f"Verified: {current_step['hypothesis']} (Evidence: {str(tool_output)[:120]}...)"
 
@@ -477,7 +506,7 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
 
     # CASE B: Zero Evidence (First Failure, count == 0 -> Sibling Tool Retry)
     elif failure_count == 0:
-        print(f"   ⚠️ [CASE B: Zero Evidence - Retry 1] Graph lookup yielded 0 results. Switching to semantic vector fallback.")
+        print(f"   [!] [CASE B: Zero Evidence - Retry 1] Initial tool yielded 0 results. Switching to semantic vector fallback.")
         current_step["tool_name"] = "tool_search_codebase_semantic"
         current_step["tool_args"] = {"query": state["query"]}
         return {
@@ -487,14 +516,16 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
 
     # CASE C: Zero Evidence (Failure Count >= 1 -> DEAD END & PRUNING!)
     else:
-        print(f"   ❌ [CASE C: DEAD END HIT] Pruning branch for hypothesis: \"{current_step['hypothesis']}\"")
+        print(f"   [-] [CASE C: DEAD END HIT] Pruning branch for hypothesis: \"{current_step['hypothesis']}\"")
         current_step["status"] = PlanStepStatus.PRUNED
         dead_end_constraint = f"Hypothesis '{current_step['hypothesis']}' has no supporting evidence in the codebase graph or vector index."
         constraints.append(dead_end_constraint)
 
+        # Advance step index past the pruned step so we don't get stuck on it!
         return {
             "negative_constraints": constraints,
             "consecutive_failures": 0,
+            "current_step_index": idx + 1,
             "plan": plan,
         }
 
@@ -510,16 +541,33 @@ def final_synthesis_and_memory_commit_node(state: BlackboardState) -> Dict[str, 
     print(f"\n>> [Stage 5: Final Synthesizer & Memory Commit] Generating answer from Blackboard facts...")
 
     if not facts:
-        final_text = f"Based on knowledge graph traversals and semantic search, no supporting occurrences were found for query: \"{query}\"."
+        final_text = f"Based on knowledge graph traversals and semantic search, no occurrences or references were found for query: \"{query}\" in the ingested codebase."
     else:
-        fact_lines = "\n".join([f"- {f['fact']}" for f in facts])
-        final_text = f"### Code Analysis Findings:\n\n{fact_lines}"
+        try:
+            llm = get_llm(temperature=0.0)
+            prompt = (
+                "You are CodeNavigator, an expert AI software architect.\n"
+                "Synthesize a clear, accurate, developer-focused explanation answering the query below strictly using the verified Blackboard facts.\n"
+                "CRITICAL RULES:\n"
+                "- Base your explanation ONLY and EXCLUSIVELY on the verified code facts and snippets provided below.\n"
+                "- Quote exact function names, variable names, and formulas directly from the verified facts.\n"
+                "- Do NOT assume, speculate, or fabricate any rules, formulas, or parameters not present in the facts.\n\n"
+                f"Developer Query: {query}\n\n"
+                "Verified Blackboard Facts:\n"
+                + "\n".join([f"- {f['fact']}" for f in facts])
+                + "\n\nSynthesized Explanation:"
+            )
+            res = llm.invoke(prompt)
+            final_text = res.content if hasattr(res, "content") else str(res)
+        except Exception:
+            fact_lines = "\n".join([f"- {f['fact']}" for f in facts])
+            final_text = f"### Code Analysis Findings:\n\n{fact_lines}"
 
     if constraints:
         constraint_lines = "\n".join([f"- {c}" for c in constraints])
-        final_text += f"\n\n### Pruned Paths & Non-Occurrences:\n{constraint_lines}"
+        final_text += f"\n\n### Verified Negative Findings (Pruned Paths):\n{constraint_lines}"
 
-    print(f"   💾 [Episodic Memory] Committed trajectory to persistent vector memory (Git: {state.get('git_hash', 'HEAD')}).")
+    print(f"   [*] [Episodic Memory] Committed trajectory to persistent vector memory (Git: {state.get('git_hash', 'HEAD')}).")
     return {"final_response": final_text}
 
 
@@ -537,21 +585,22 @@ def route_after_evaluator(state: BlackboardState) -> Literal["step_executor", "h
     plan = state.get("plan", [])
     idx = state.get("current_step_index", 0)
     failures = state.get("consecutive_failures", 0)
-    negative_constraints = state.get("negative_constraints", [])
+    replan_count = state.get("replan_count", 0)
 
-    # Case C (dead end constraint was just added on this turn) -> Adaptive Re-Plan
-    if negative_constraints and plan and plan[min(idx, len(plan) - 1)]["status"] == PlanStepStatus.PRUNED:
-        return "hierarchical_planner"
-
-    # Case B (retry fallback on same step)
+    # If Case B (retry fallback on same step)
     if failures == 1:
         return "step_executor"
 
-    # Case A & more steps remain
+    # If more steps remain in current plan
     if idx < len(plan):
         return "step_executor"
 
-    # All steps completed
+    # If all steps in current plan finished, but some were pruned and we have replan allowance
+    pruned_steps = [s for s in plan if s.get("status") == PlanStepStatus.PRUNED]
+    if pruned_steps and replan_count < 2:
+        return "hierarchical_planner"
+
+    # All steps finished or replan exhausted -> Final Synthesis
     return "final_synthesis"
 
 
@@ -620,6 +669,7 @@ class NextGenCodeNavigatorAgent:
             "fast_path_result": None,
             "plan": [],
             "current_step_index": 0,
+            "replan_count": 0,
             "current_tool_output": None,
             "blackboard_facts": [],
             "negative_constraints": [],
