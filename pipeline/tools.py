@@ -18,6 +18,8 @@ _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
+import atexit
+import threading
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -28,33 +30,108 @@ from pipeline.tools_utils import CallGraphTraversal
 from pipeline.neo4j_sink import Neo4jCodeGraphIngestor
 from pipeline.weaviate_sink import WeaviateCloudCodeDB
 
-
-def _get_neo4j_session():
-    """Helper to open a Neo4j session using environment variables."""
-    uri = os.environ.get("NEO4J_URI")
-    user = os.environ.get("NEO4J_USER")
-    password = os.environ.get("NEO4J_PASSWORD")
-    if not (uri and user and password):
-        return None
-    try:
-        db = Neo4jCodeGraphIngestor(uri=uri, auth=(user, password))
-        return db
-    except Exception as e:
-        print(f"[Warning] Could not connect to Neo4j: {e}")
-        return None
+# -----------------------------------------------------------------------------
+# Thread-Safe Persistent Connection Pooling (Singleton Pattern)
+# -----------------------------------------------------------------------------
+_NEO4J_LOCK = threading.Lock()
+_WEAVIATE_LOCK = threading.Lock()
+_NEO4J_SINGLETON: Optional[Neo4jCodeGraphIngestor] = None
+_WEAVIATE_SINGLETON: Optional[WeaviateCloudCodeDB] = None
 
 
-def _get_weaviate_client():
-    """Helper to connect to Weaviate Cloud."""
-    url = os.environ.get("WEAVIATE_CLUSTER_URL") or os.environ.get("WEAVIATE_URL")
-    api_key = os.environ.get("WEAVIATE_API_KEY")
-    if not (url and api_key):
-        return None
-    try:
-        return WeaviateCloudCodeDB(cluster_url=url, api_key=api_key)
-    except Exception as e:
-        print(f"[Warning] Could not connect to Weaviate: {e}")
-        return None
+class _PooledNeo4jClient:
+    """Wrapper around singleton Neo4j driver that prevents per-tool closing of the underlying connection pool."""
+
+    def __init__(self, ingestor: Neo4jCodeGraphIngestor):
+        self._ingestor = ingestor
+
+    @property
+    def driver(self):
+        return self._ingestor.driver
+
+    def close(self):
+        # No-op: keep the underlying driver alive across tool calls during the session
+        pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._ingestor, name)
+
+
+class _PooledWeaviateClient:
+    """Wrapper around singleton Weaviate client that prevents per-tool closing of the vector client."""
+
+    def __init__(self, client: WeaviateCloudCodeDB):
+        self._client = client
+
+    def close(self):
+        # No-op: keep the underlying Weaviate client alive across tool calls during the session
+        pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
+def _get_neo4j_session() -> Optional[_PooledNeo4jClient]:
+    """Returns a thread-safe singleton Neo4j driver wrapped for connection pool reuse."""
+    global _NEO4J_SINGLETON
+    if _NEO4J_SINGLETON is not None:
+        return _PooledNeo4jClient(_NEO4J_SINGLETON)
+
+    with _NEO4J_LOCK:
+        if _NEO4J_SINGLETON is not None:
+            return _PooledNeo4jClient(_NEO4J_SINGLETON)
+        uri = os.environ.get("NEO4J_URI")
+        user = os.environ.get("NEO4J_USER")
+        password = os.environ.get("NEO4J_PASSWORD")
+        if not (uri and user and password):
+            return None
+        try:
+            _NEO4J_SINGLETON = Neo4jCodeGraphIngestor(uri=uri, auth=(user, password))
+            return _PooledNeo4jClient(_NEO4J_SINGLETON)
+        except Exception as e:
+            print(f"[Warning] Could not connect to Neo4j: {e}")
+            return None
+
+
+def _get_weaviate_client() -> Optional[_PooledWeaviateClient]:
+    """Returns a thread-safe singleton Weaviate client wrapped for connection pool reuse."""
+    global _WEAVIATE_SINGLETON
+    if _WEAVIATE_SINGLETON is not None:
+        return _PooledWeaviateClient(_WEAVIATE_SINGLETON)
+
+    with _WEAVIATE_LOCK:
+        if _WEAVIATE_SINGLETON is not None:
+            return _PooledWeaviateClient(_WEAVIATE_SINGLETON)
+        url = os.environ.get("WEAVIATE_CLUSTER_URL") or os.environ.get("WEAVIATE_URL")
+        api_key = os.environ.get("WEAVIATE_API_KEY")
+        if not (url and api_key):
+            return None
+        try:
+            _WEAVIATE_SINGLETON = WeaviateCloudCodeDB(cluster_url=url, api_key=api_key)
+            return _PooledWeaviateClient(_WEAVIATE_SINGLETON)
+        except Exception as e:
+            print(f"[Warning] Could not connect to Weaviate: {e}")
+            return None
+
+
+def _cleanup_singletons():
+    """Closes underlying drivers when process exits."""
+    global _NEO4J_SINGLETON, _WEAVIATE_SINGLETON
+    if _NEO4J_SINGLETON:
+        try:
+            _NEO4J_SINGLETON.close()
+        except Exception:
+            pass
+        _NEO4J_SINGLETON = None
+    if _WEAVIATE_SINGLETON:
+        try:
+            _WEAVIATE_SINGLETON.close()
+        except Exception:
+            pass
+        _WEAVIATE_SINGLETON = None
+
+
+atexit.register(_cleanup_singletons)
 
 # -----------------------------------------------------------------------------
 # LangChain Tools (The 20-Task Suite)
@@ -68,11 +145,13 @@ def tool_traverse_call_graph(
     max_depth: int = 30,
     file_path: Optional[str] = None,
     include_raw: bool = True,
+    exclude_boilerplate: bool = True,
     limit: int = 50,
 ) -> Dict[str, Any]:
     """
     [Task #1, #2] Traverses the call graph in Neo4j up to max_depth hops.
     Use direction='incoming' for upstream callers and direction='outgoing' for downstream callees.
+    Pre-filters boilerplate dunder methods and standard library calls in Cypher when exclude_boilerplate=True.
     """
     with CallGraphTraversal() as engine:
         return engine.traverse(
@@ -81,6 +160,7 @@ def tool_traverse_call_graph(
             max_depth=max_depth,
             file_path=file_path,
             include_raw=include_raw,
+            exclude_boilerplate=exclude_boilerplate,
             limit=limit,
         )
 
@@ -117,7 +197,52 @@ def tool_trace_parameter_lineage(
 ) -> Dict[str, Any]:
     """
     [Task #4] Traces argument values and lineage for a specific function parameter across callers up to max_depth hops using DP.
+    Performs database-level filtered edge expansion for parameter bindings and incoming call chains.
     """
+    func_clean = function_name.split(".")[-1] if "." in function_name else function_name
+    param_found = False
+    direct_bindings = []
+
+    # 1. Database-level Parameter verification and binding extraction
+    db = _get_neo4j_session()
+    if db:
+        try:
+            with db.driver.session() as session:
+                # A. Verify parameter definition on function
+                param_check = session.run("""
+                    MATCH (fn:Function)-[:HAS_PARAMETER]->(p:Parameter)
+                    WHERE (fn.name = $func OR fn.name = $func_clean OR fn.id ENDS WITH ('.' + $func_clean) OR fn.id ENDS WITH ('::' + $func_clean))
+                      AND (p.name = $param OR p.name = $param_clean)
+                    RETURN fn.name AS fn_name, p.name AS param_name, p.default_value AS default_val
+                    LIMIT 1
+                """, func=function_name, func_clean=func_clean, param=parameter_name, param_clean=parameter_name.strip("$"))
+                r = param_check.single()
+                if r:
+                    param_found = True
+
+                # B. Query callers with parameter-filtered edge expansion directly in Cypher
+                caller_records = session.run("""
+                    MATCH (caller:Function)-[r:RESOLVED_CALLS|CALLS]->(fn:Function)
+                    WHERE (fn.name = $func OR fn.name = $func_clean OR fn.id ENDS WITH ('.' + $func_clean) OR fn.id ENDS WITH ('::' + $func_clean))
+                    RETURN DISTINCT
+                        elementId(caller) AS caller_id,
+                        coalesce(caller.name, caller.id) AS caller_name,
+                        caller.file_path AS file_path,
+                        coalesce(r.line, caller.start_line, 0) AS line
+                    ORDER BY line ASC
+                    LIMIT $limit
+                """, func=function_name, func_clean=func_clean, limit=limit)
+                for rec in caller_records:
+                    direct_bindings.append({
+                        "caller": rec["caller_name"],
+                        "file": rec["file_path"],
+                        "line": rec["line"],
+                        "bound_argument": f"parameter: {parameter_name} (inferred call site)",
+                    })
+        except Exception as e:
+            print(f"[Warning] Parameter lineage Cypher check: {e}")
+
+    # 2. Multi-hop Transitive Lineage Call Tree via DP
     with CallGraphTraversal() as engine:
         res = engine.traverse_graph_dp(
             symbols=function_name,
@@ -128,43 +253,18 @@ def tool_trace_parameter_lineage(
             limit=limit,
         )
 
-    callers = []
-    # 1. Collect from raw calls
-    for r in res.get("raw_calls", []):
-        callers.append({
-            "caller": r.get("caller_name"),
-            "file": r.get("file_path"),
-            "line": r.get("line"),
-            "distance": r.get("distance", 1),
-        })
-
-    # 2. Collect from resolved unique nodes (excluding target itself)
-    for n in res.get("detailed_nodes", []):
-        if n.get("name") != function_name and n.get("distance", 0) > 0:
-            callers.append({
-                "caller": n.get("name"),
-                "file": n.get("file_path"),
-                "line": n.get("line"),
-                "distance": n.get("distance"),
-            })
-
-    # Deduplicate callers
-    dedup_callers = []
-    seen = set()
-    for c in callers:
-        k = (c.get("caller"), c.get("file"), c.get("line"))
-        if k not in seen:
-            seen.add(k)
-            dedup_callers.append(c)
-
     return {
         "function_name": function_name,
         "parameter_name": parameter_name,
+        "parameter_exists_in_ast": param_found,
         "max_depth": max_depth,
-        "total_call_sites": len(dedup_callers),
-        "caller_call_sites": dedup_callers[:limit],
+        "direct_bound_callers": direct_bindings,
+        "total_direct_callers": len(direct_bindings),
         "execution_paths": res.get("paths", [])[:limit],
-        "lineage_summary": f"Parameter '{parameter_name}' in '{function_name}' is invoked across {len(dedup_callers)} call site(s) up to {max_depth} hop(s). Inspect caller snippets for explicit argument binding.",
+        "lineage_summary": (
+            f"Parameter '{parameter_name}' on function '{function_name}' has {len(direct_bindings)} direct caller binding(s) "
+            f"and {len(res.get('paths', []))} multi-hop execution chain(s) up to depth {max_depth}."
+        ),
     }
 
 

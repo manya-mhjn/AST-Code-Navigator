@@ -5,6 +5,7 @@ Handles schema setup, local embedding generation, and batch upload
 of code chunks to Weaviate Cloud.
 """
 
+import functools
 import os
 import sys
 
@@ -24,7 +25,6 @@ if sys.platform == "win32":
 import weaviate
 from weaviate.classes.init import Auth
 from weaviate.classes.config import Configure, Property, DataType
-from weaviate.classes.query import MetadataQuery
 from sentence_transformers import SentenceTransformer
 
 
@@ -81,10 +81,18 @@ class WeaviateCloudCodeDB:
         )
         print(f"Collection '{self.collection_name}' created on Weaviate Cloud.")
 
-    def _encode_text(self, text: str) -> list[float]:
+    @functools.lru_cache(maxsize=256)
+    def _cached_encode_text(self, text: str) -> tuple[float, ...]:
+        """Generates and memoizes query embeddings in memory."""
         if self.gemini_router:
-            return self.gemini_router.embed_query(text)
-        return self.encoder.encode(text).tolist()
+            res = self.gemini_router.embed_query(text)
+        else:
+            res = self.encoder.encode(text).tolist()
+        return tuple(res)
+
+    def _encode_text(self, text: str) -> list[float]:
+        """Returns query embedding, using the LRU cache for zero-latency repeats."""
+        return list(self._cached_encode_text(text))
 
     def _encode_batch(self, texts: list[str]) -> list[list[float]]:
         if self.gemini_router:

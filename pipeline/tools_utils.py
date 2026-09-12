@@ -53,11 +53,24 @@ class CallGraphTraversal:
             self.neo4j_db = neo4j_sink
             self._owns_db = False
         else:
-            self.neo4j_db = Neo4jCodeGraphIngestor(
-                uri=_require_env("NEO4J_URI"),
-                auth=(_require_env("NEO4J_USER"), _require_env("NEO4J_PASSWORD")),
-            )
-            self._owns_db = True
+            try:
+                from pipeline.tools import _get_neo4j_session
+                pooled = _get_neo4j_session()
+                if pooled:
+                    self.neo4j_db = pooled
+                    self._owns_db = False
+                else:
+                    self.neo4j_db = Neo4jCodeGraphIngestor(
+                        uri=_require_env("NEO4J_URI"),
+                        auth=(_require_env("NEO4J_USER"), _require_env("NEO4J_PASSWORD")),
+                    )
+                    self._owns_db = True
+            except Exception:
+                self.neo4j_db = Neo4jCodeGraphIngestor(
+                    uri=_require_env("NEO4J_URI"),
+                    auth=(_require_env("NEO4J_USER"), _require_env("NEO4J_PASSWORD")),
+                )
+                self._owns_db = True
 
         self._dp_memo: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -82,6 +95,7 @@ class CallGraphTraversal:
         max_depth: int = 4,
         file_path: Optional[str] = None,
         include_raw: bool = True,
+        exclude_boilerplate: bool = True,
         limit: int = 50,
     ) -> Dict[str, Any]:
         direction = direction.lower()
@@ -101,6 +115,7 @@ class CallGraphTraversal:
             "source_labels": source_labels,
             "target_labels": target_labels,
             "max_depth": max_depth,
+            "exclude_boilerplate": exclude_boilerplate,
             "total_affected_symbols": 0,
             "total_affected_files": 0,
             "affected_files_summary": {},
@@ -131,6 +146,7 @@ class CallGraphTraversal:
                     target_labels=target_labels,
                     max_depth=max_depth,
                     include_raw=include_raw,
+                    exclude_boilerplate=exclude_boilerplate,
                     limit=limit,
                 )
                 all_paths.extend(paths)
@@ -310,14 +326,9 @@ class CallGraphTraversal:
         limit: int = 50,
     ) -> Dict[str, Any]:
         """
-        Universal Dynamic Programming Dead Code & Unused Entity Detection Engine.
-        Analyzes and detects:
-        1. Dead / Uncalled Functions (in-degree = 0 or unreachable from entrypoints via DP)
-        2. Dead / Uninstantiated Classes (0 incoming INSTANTIATES / INHERITS_FROM)
-        3. Dead / Unused Files (0 incoming IMPORTS, excluding root scripts)
-        4. Dead / Unused Environment Variables (0 USES_ENV relationships)
-        5. Dead / Unused Global Variables (0 referencing functions)
-        6. Dead / Unused Function Parameters
+        Universal Mark-and-Sweep Single-Pass Set Difference Dead Code Engine.
+        Computes: Dead Entities = Universe(All Nodes) \ Reachable(From Application Entrypoints).
+        Catches isolated dead islands, uninstantiated class clusters, and unused files in O(V + E) linear time.
         """
         entity_type = entity_type.lower()
         results: Dict[str, Any] = {
@@ -333,132 +344,115 @@ class CallGraphTraversal:
         }
 
         with self.neo4j_db.driver.session() as session:
-            # 1. Dead Functions (using DP Reachability if requested)
-            if entity_type in ("all", "functions", "function", "methods"):
-                if use_dp_reachability:
-                    # Find root entrypoints (main functions, endpoints)
-                    entrypoint_records = session.run("""
-                        MATCH (fn:Function)
-                        WHERE fn.name = 'main' 
-                           OR fn.name STARTS WITH 'run_'
-                           OR fn.name STARTS WITH 'cli_'
-                           OR fn.file_path ENDS WITH 'main.py'
-                           OR fn.file_path ENDS WITH 'app.py'
-                        RETURN fn.name AS name, fn.id AS id
-                    """)
-                    entrypoint_syms = [r["name"] for r in entrypoint_records]
-                    
-                    reachable_ids = set()
-                    if entrypoint_syms:
-                        reach_res = self.traverse_graph_dp(
-                            symbols=entrypoint_syms,
-                            direction="outgoing",
-                            edge_types=["RESOLVED_CALLS", "CALLS", "INSTANTIATES", "HAS_METHOD"],
-                            max_depth=30,
-                            limit=500,
-                        )
-                        for n in reach_res.get("detailed_nodes", []):
-                            reachable_ids.add(n.get("id"))
-                            if n.get("name"):
-                                reachable_ids.add(n.get("name"))
+            # 1. STEP 1: Find Application Root Entrypoints
+            entrypoint_records = session.run("""
+                MATCH (entry)
+                WHERE (entry:Function OR entry:File)
+                  AND (entry.name IN ['main', 'app', 'cli', 'run', 'start', 'serve'] 
+                       OR entry.name STARTS WITH 'main_' 
+                       OR entry.name STARTS WITH 'cli_' 
+                       OR entry.name STARTS WITH 'run_' 
+                       OR entry.file_path ENDS WITH 'main.py' 
+                       OR entry.file_path ENDS WITH 'app.py' 
+                       OR entry.file_path ENDS WITH 'setup.py' 
+                       OR entry.file_path ENDS WITH 'manage.py')
+                RETURN DISTINCT elementId(entry) AS entry_id, coalesce(entry.name, entry.id) AS name
+            """)
+            entrypoint_rows = [dict(r) for r in entrypoint_records]
+            entrypoint_syms = [r["name"] for r in entrypoint_rows]
+            entrypoint_ids = [r["entry_id"] for r in entrypoint_rows]
 
-                    # Query all functions and filter out reachable ones
-                    all_fn_records = session.run("""
-                        MATCH (fn:Function)
-                        WHERE NOT fn.name STARTS WITH '__'
-                          AND NOT fn.name STARTS WITH 'test_'
-                          AND ($scope IS NULL OR fn.file_path CONTAINS $scope OR fn.id CONTAINS $scope)
-                        RETURN fn.id AS id, fn.name AS name, fn.file_path AS file_path, coalesce(fn.start_line, fn.line, 0) AS line
-                        LIMIT 300
-                    """, scope=scope_path)
+            # 2. STEP 2: Compute Reachable Set (R) from Entrypoints
+            reachable_elem_ids: Set[Any] = set(entrypoint_ids)
+            reachable_names: Set[str] = set(entrypoint_syms)
 
-                    dead_fns = []
-                    for r in all_fn_records:
-                        f_id = r["id"]
-                        f_name = r["name"]
-                        if f_id not in reachable_ids and f_name not in reachable_ids:
-                            dead_fns.append({
-                                "name": f_name,
-                                "file_path": r["file_path"],
-                                "line": r["line"],
-                                "reason": "Unreachable from application entrypoints via DP forward traversal",
-                            })
-                    results["dead_functions"] = dead_fns[:limit]
-                else:
-                    # 1-hop in-degree zero
-                    fn_records = session.run("""
-                        MATCH (fn:Function)
-                        WHERE NOT ()-[:RESOLVED_CALLS|CALLS]->(fn)
-                          AND NOT fn.name STARTS WITH '__'
-                          AND NOT fn.name STARTS WITH 'test_'
-                          AND ($scope IS NULL OR fn.file_path CONTAINS $scope OR fn.id CONTAINS $scope)
-                        RETURN fn.name AS name, fn.file_path AS file_path, coalesce(fn.start_line, fn.line, 0) AS line
-                        LIMIT $limit
-                    """, scope=scope_path, limit=limit)
-                    results["dead_functions"] = [
-                        {"name": r["name"], "file_path": r["file_path"], "line": r["line"], "reason": "0 incoming callers"}
-                        for r in fn_records
-                    ]
+            if entrypoint_syms and use_dp_reachability:
+                reach_res = self.traverse_graph_dp(
+                    symbols=entrypoint_syms,
+                    direction="outgoing",
+                    edge_types=["RESOLVED_CALLS", "CALLS", "IMPORTS", "INSTANTIATES", "HAS_METHOD", "RESOLVED_INHERITS", "USES_ENV", "CONTAINS_VARIABLE"],
+                    max_depth=30,
+                    limit=1000,
+                )
+                for n in reach_res.get("detailed_nodes", []):
+                    if n.get("int_id"):
+                        reachable_elem_ids.add(n.get("int_id"))
+                    if n.get("id"):
+                        reachable_elem_ids.add(n.get("id"))
+                    if n.get("name"):
+                        reachable_names.add(n.get("name"))
 
-            # 2. Dead Classes (0 instantiations and 0 inheritance)
-            if entity_type in ("all", "classes", "class"):
-                cls_records = session.run("""
-                    MATCH (cls:Class)
-                    WHERE NOT ()-[:INSTANTIATES]->(cls)
-                      AND NOT ()-[:RESOLVED_INHERITS|INHERITS_FROM]->(cls)
-                      AND NOT cls.name STARTS WITH 'Test'
-                      AND NOT cls.name STARTS WITH '_'
-                      AND ($scope IS NULL OR cls.file_path CONTAINS $scope OR cls.id CONTAINS $scope)
-                    RETURN cls.name AS name, cls.file_path AS file_path, coalesce(cls.start_line, cls.line, 0) AS line
-                    LIMIT $limit
-                """, scope=scope_path, limit=limit)
-                results["dead_classes"] = [
-                    {"name": r["name"], "file_path": r["file_path"], "line": r["line"], "reason": "0 instantiations and 0 subclasses"}
-                    for r in cls_records
-                ]
+            # 3. STEP 3: Fetch Universe Set (U) of all defined entities
+            universe_records = session.run("""
+                MATCH (n)
+                WHERE (n:Function OR n:Class OR n:File OR n:EnvVar OR n:Variable)
+                  AND NOT (n.name STARTS WITH '__' AND n.name ENDS WITH '__')
+                  AND NOT n.name STARTS WITH 'test_'
+                  AND NOT (n.file_path IS NOT NULL AND n.file_path CONTAINS 'test')
+                  AND NOT n.name IN ['main', 'app', 'setup.py', '__init__.py', 'manage.py']
+                  AND ($scope IS NULL OR n.file_path CONTAINS $scope OR n.id CONTAINS $scope)
+                RETURN DISTINCT
+                    elementId(n) AS elem_id,
+                    coalesce(n.id, n.file_path, n.name) AS id,
+                    coalesce(n.name, n.file_path, n.id) AS name,
+                    coalesce(n.file_path, split(n.id, '::')[0]) AS file_path,
+                    labels(n)[0] AS type,
+                    coalesce(n.start_line, n.line, 0) AS line,
+                    n.default_value AS default_value
+                LIMIT 500
+            """, scope=scope_path)
 
-            # 3. Dead Files / Modules (0 incoming imports, excluding root entrypoints)
-            if entity_type in ("all", "files", "file", "modules"):
-                file_records = session.run("""
-                    MATCH (f:File)
-                    WHERE NOT ()-[:IMPORTS]->(f)
-                      AND NOT f.name IN ['main.py', 'app.py', 'setup.py', '__init__.py', 'manage.py']
-                      AND ($scope IS NULL OR f.file_path CONTAINS $scope OR f.name CONTAINS $scope)
-                    RETURN coalesce(f.file_path, f.name) AS file_path, f.name AS name
-                    LIMIT $limit
-                """, scope=scope_path, limit=limit)
-                results["dead_files"] = [
-                    {"file_path": r["file_path"], "name": r["name"], "reason": "0 incoming file imports across the repository"}
-                    for r in file_records
-                ]
+            # 4. STEP 4: Single-Pass Set Difference in Python RAM (U \ R)
+            for r in universe_records:
+                elem_id = r["elem_id"]
+                node_id = r["id"]
+                name = r["name"]
+                node_type = r["type"]
+                file_path = r["file_path"] or "unknown"
+                line = r["line"]
 
-            # 4. Dead Environment Variables (0 USES_ENV usages)
-            if entity_type in ("all", "env_vars", "env", "envs"):
-                env_records = session.run("""
-                    MATCH (env:EnvVar)
-                    WHERE NOT ()-[:USES_ENV]->(env)
-                    RETURN env.name AS name, env.default_value AS default_value
-                    LIMIT $limit
-                """, limit=limit)
-                results["dead_env_vars"] = [
-                    {"name": r["name"], "default_value": r["default_value"], "reason": "0 code references to this environment variable"}
-                    for r in env_records
-                ]
+                # If entity is not in reachable set, it belongs to the dead set
+                if (elem_id not in reachable_elem_ids) and (node_id not in reachable_elem_ids) and (name not in reachable_names):
+                    if node_type == "Function" and entity_type in ("all", "functions", "function", "methods"):
+                        results["dead_functions"].append({
+                            "name": name,
+                            "file_path": file_path,
+                            "line": line,
+                            "reason": "Unreachable from application entrypoints (Dead Code / Island)",
+                        })
+                    elif node_type == "Class" and entity_type in ("all", "classes", "class"):
+                        results["dead_classes"].append({
+                            "name": name,
+                            "file_path": file_path,
+                            "line": line,
+                            "reason": "0 active instantiations or inheritance links from live code",
+                        })
+                    elif node_type == "File" and entity_type in ("all", "files", "file", "modules"):
+                        results["dead_files"].append({
+                            "name": name,
+                            "file_path": file_path,
+                            "reason": "0 incoming imports from application entrypoints (Orphan File)",
+                        })
+                    elif node_type == "EnvVar" and entity_type in ("all", "env_vars", "env", "envs"):
+                        results["dead_env_vars"].append({
+                            "name": name,
+                            "default_value": r["default_value"],
+                            "reason": "Unreferenced environment variable in live execution paths",
+                        })
+                    elif node_type == "Variable" and entity_type in ("all", "variables", "variable", "constants"):
+                        results["dead_variables"].append({
+                            "name": name,
+                            "file_path": file_path,
+                            "line": line,
+                            "reason": "Unreferenced module-level variable / constant",
+                        })
 
-            # 5. Dead Variables & Constants
-            if entity_type in ("all", "variables", "variable", "constants"):
-                var_records = session.run("""
-                    MATCH (var:Variable)
-                    WHERE NOT ()-[:CONTAINS_VARIABLE]->()
-                      AND NOT var.name STARTS WITH '__'
-                      AND ($scope IS NULL OR var.file_path CONTAINS $scope OR var.id CONTAINS $scope)
-                    RETURN var.name AS name, var.file_path AS file_path, coalesce(var.start_line, var.line, 0) AS line
-                    LIMIT $limit
-                """, scope=scope_path, limit=limit)
-                results["dead_variables"] = [
-                    {"name": r["name"], "file_path": r["file_path"], "line": r["line"], "reason": "Unreferenced global/module variable"}
-                    for r in var_records
-                ]
+            # Trim to limit per category
+            results["dead_functions"] = results["dead_functions"][:limit]
+            results["dead_classes"] = results["dead_classes"][:limit]
+            results["dead_files"] = results["dead_files"][:limit]
+            results["dead_env_vars"] = results["dead_env_vars"][:limit]
+            results["dead_variables"] = results["dead_variables"][:limit]
 
         total_dead = (
             len(results["dead_functions"])
@@ -486,31 +480,35 @@ class CallGraphTraversal:
         target_labels: Optional[List[str]],
         max_depth: int,
         include_raw: bool,
+        exclude_boilerplate: bool,
         limit: int,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
         discovered_paths: List[Dict[str, Any]] = []
         discovered_raw: List[Dict[str, Any]] = []
         visited_nodes: Dict[str, Dict[str, Any]] = {}
-        global_visited_node_ids: Set[str] = set()
+        global_visited_int_ids: Set[Any] = set()
 
         queue: deque[Tuple[Dict[str, Any], List[Dict[str, Any]], int]] = deque()
 
         for anchor in anchors:
+            anchor_int_id = anchor.get("int_id")
             anchor_id = anchor["id"]
-            global_visited_node_ids.add(anchor_id)
+            if anchor_int_id is not None:
+                global_visited_int_ids.add(anchor_int_id)
             visited_nodes[anchor_id] = {**anchor, "distance": 0}
             queue.append((anchor, [anchor], 0))
 
-        while queue and len(discovered_paths) < limit:
+        # Early Depth Pruning: terminate frontier expansion if limit is reached
+        while queue and len(discovered_paths) < limit and len(visited_nodes) < limit * 2:
             curr_node, chain, depth = queue.popleft()
 
             if depth >= max_depth:
                 continue
 
-            curr_id = curr_node["id"]
+            curr_id = curr_node.get("int_id") if curr_node.get("int_id") is not None else curr_node["id"]
             edge_key = "-".join(sorted(edge_types))
             label_key = "-".join(sorted(target_labels)) if target_labels else "all"
-            memo_key = f"{curr_id}:{direction}:{edge_key}:{label_key}"
+            memo_key = f"{curr_id}:{direction}:{edge_key}:{label_key}:{exclude_boilerplate}"
 
             if memo_key in self._dp_memo:
                 neighbors = self._dp_memo[memo_key]
@@ -521,6 +519,7 @@ class CallGraphTraversal:
                     direction=direction,
                     edge_types=edge_types,
                     target_labels=target_labels,
+                    exclude_boilerplate=exclude_boilerplate,
                 )
                 self._dp_memo[memo_key] = neighbors
 
@@ -529,17 +528,18 @@ class CallGraphTraversal:
                 nbr_type = nbr.get("type", "Node")
                 nbr_id = nbr["id"]
                 nbr_name = nbr.get("name", nbr_id)
+                nbr_int_id = nbr.get("int_id")
 
                 if nbr_type in ("Target", "RawVariable", "RawInstanceAttribute"):
                     if include_raw:
                         discovered_raw.append({
                             "type": f"raw_{'caller' if direction == 'incoming' else 'callee'}",
                             "source_id": curr_id,
-                            "source_name": curr_node.get("name", curr_id),
+                            "source_name": curr_node.get("name", str(curr_id)),
                             "caller_id": nbr_id if direction == "incoming" else curr_id,
-                            "caller_name": nbr_name if direction == "incoming" else curr_node.get("name", curr_id),
+                            "caller_name": nbr_name if direction == "incoming" else curr_node.get("name", str(curr_id)),
                             "line": nbr.get("line"),
-                            "target_name": curr_node.get("name", curr_id) if direction == "incoming" else nbr_name,
+                            "target_name": curr_node.get("name", str(curr_id)) if direction == "incoming" else nbr_name,
                             "file_path": nbr.get("file_path", ""),
                             "distance": depth + 1,
                         })
@@ -549,11 +549,11 @@ class CallGraphTraversal:
                     discovered_raw.append({
                         "type": f"raw_{'caller' if direction == 'incoming' else 'callee'}",
                         "source_id": curr_id,
-                        "source_name": curr_node.get("name", curr_id),
+                        "source_name": curr_node.get("name", str(curr_id)),
                         "caller_id": nbr_id if direction == "incoming" else curr_id,
-                        "caller_name": nbr_name if direction == "incoming" else curr_node.get("name", curr_id),
+                        "caller_name": nbr_name if direction == "incoming" else curr_node.get("name", str(curr_id)),
                         "line": nbr.get("line"),
-                        "target_name": curr_node.get("name", curr_id) if direction == "incoming" else nbr_name,
+                        "target_name": curr_node.get("name", str(curr_id)) if direction == "incoming" else nbr_name,
                         "file_path": nbr.get("file_path", ""),
                         "distance": depth + 1,
                     })
@@ -563,7 +563,7 @@ class CallGraphTraversal:
                 else:
                     new_chain = chain + [nbr]
 
-                exec_chain = " -> ".join([n.get("name", n["id"]) for n in new_chain])
+                exec_chain = " -> ".join([n.get("name", str(n.get("id", ""))) for n in new_chain])
 
                 discovered_paths.append({
                     "type": direction,
@@ -573,10 +573,14 @@ class CallGraphTraversal:
                     "edges": [edge_type] * (depth + 1),
                 })
 
-                if nbr_id not in global_visited_node_ids:
-                    global_visited_node_ids.add(nbr_id)
+                # Fast integer-based membership test in O(1)
+                is_visited = (nbr_int_id in global_visited_int_ids) if nbr_int_id is not None else (nbr_id in visited_nodes)
+                if not is_visited:
+                    if nbr_int_id is not None:
+                        global_visited_int_ids.add(nbr_int_id)
                     visited_nodes[nbr_id] = {
                         "id": nbr_id,
+                        "int_id": nbr_int_id,
                         "name": nbr_name,
                         "type": nbr_type,
                         "file_path": nbr.get("file_path"),
@@ -594,20 +598,30 @@ class CallGraphTraversal:
         direction: str,
         edge_types: List[str],
         target_labels: Optional[List[str]],
+        exclude_boilerplate: bool = True,
     ) -> List[Dict[str, Any]]:
-        node_id = node["id"]
-        node_name = node.get("name") or node_id.split("::")[-1].split(".")[-1]
+        node_id = node.get("id")
+        node_name = node.get("name") or str(node_id).split("::")[-1].split(".")[-1]
+        int_id = node.get("int_id")
         rel_pattern = "|".join(edge_types)
+
+        boilerplate_clause = ""
+        if exclude_boilerplate:
+            boilerplate_clause = """
+              AND NOT (neighbor.name STARTS WITH '__' AND neighbor.name ENDS WITH '__')
+              AND NOT neighbor.name IN ['print', 'len', 'range', 'isinstance', 'str', 'int', 'dict', 'list', 'set', 'repr', 'super', 'type', 'getattr', 'setattr', 'hasattr']
+            """
+
+        match_curr = "(($int_id IS NOT NULL AND elementId(curr) = $int_id) OR curr.id = $node_id OR curr.name = $node_name OR curr.id ENDS WITH ('.' + $node_name) OR curr.id ENDS WITH ('::' + $node_name))"
 
         if direction == "incoming":
             cypher = f"""
                 MATCH (neighbor)-[r:{rel_pattern}]->(curr)
-                WHERE (curr.id = $node_id 
-                   OR curr.name = $node_name 
-                   OR curr.id ENDS WITH ('.' + $node_name) 
-                   OR curr.id ENDS WITH ('::' + $node_name))
+                WHERE {match_curr}
                   AND ($target_labels IS NULL OR labels(neighbor)[0] IN $target_labels)
+                  {boilerplate_clause}
                 RETURN DISTINCT
+                    elementId(neighbor) AS int_id,
                     coalesce(neighbor.id, neighbor.name) AS id,
                     coalesce(neighbor.name, neighbor.id) AS name,
                     coalesce(neighbor.file_path, split(neighbor.id, '::')[0]) AS file_path,
@@ -619,12 +633,11 @@ class CallGraphTraversal:
         else:
             cypher = f"""
                 MATCH (curr)-[r:{rel_pattern}]->(neighbor)
-                WHERE (curr.id = $node_id 
-                   OR curr.name = $node_name 
-                   OR curr.id ENDS WITH ('.' + $node_name) 
-                   OR curr.id ENDS WITH ('::' + $node_name))
+                WHERE {match_curr}
                   AND ($target_labels IS NULL OR labels(neighbor)[0] IN $target_labels)
+                  {boilerplate_clause}
                 RETURN DISTINCT
+                    elementId(neighbor) AS int_id,
                     coalesce(neighbor.id, neighbor.name) AS id,
                     coalesce(neighbor.name, neighbor.id) AS name,
                     coalesce(neighbor.file_path, split(neighbor.id, '::')[0]) AS file_path,
@@ -636,6 +649,7 @@ class CallGraphTraversal:
 
         records = session.run(
             cypher,
+            int_id=int_id,
             node_id=node_id,
             node_name=node_name,
             target_labels=target_labels,
@@ -660,6 +674,7 @@ class CallGraphTraversal:
               AND ($source_labels IS NULL OR labels(n)[0] IN $source_labels)
               AND ($file_path IS NULL OR n.file_path = $file_path OR n.id STARTS WITH $file_path)
             RETURN DISTINCT
+                elementId(n) AS int_id,
                 coalesce(n.id, n.name) AS id,
                 coalesce(n.name, n.id) AS name,
                 coalesce(n.file_path, split(n.id, '::')[0]) AS file_path,

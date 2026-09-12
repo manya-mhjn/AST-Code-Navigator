@@ -12,6 +12,7 @@ and zero-error automated failover across:
       * gemini-embedding-2    (100 RPM, 30K TPM, 1,000 RPD)
 """
 
+import functools
 import os
 import time
 import threading
@@ -200,8 +201,12 @@ class GeminiEmbeddingRouter:
         }
         self._initialized = True
 
+    @functools.lru_cache(maxsize=256)
+    def _cached_embed_query(self, text: str) -> tuple[float, ...]:
+        return tuple(self._embed_single(text))
+
     def embed_query(self, text: str) -> List[float]:
-        return self._embed_single(text)
+        return list(self._cached_embed_query(text))
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         returns = []
