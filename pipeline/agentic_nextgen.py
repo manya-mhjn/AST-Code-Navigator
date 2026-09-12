@@ -157,6 +157,11 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
                         return sym
         return None
 
+    # Guard: Multi-symbol, Blast Radius, or Complex Impact Analysis -> Delegate to Hierarchical Planner
+    if any(k in q_lower for k in ["blast radius", "combined", "impact of", "what breaks", "what will break", "if i modify", "if we change"]) or (" and " in q_lower and ("modify" in q_lower or "change" in q_lower)):
+        print(f"  [-] [Fast-Path Bypass] Multi-symbol or impact query detected. Delegating to Stage 2: Hierarchical Planner.")
+        return {"fast_path_hit": False}
+
     # 1. Task #09: Environment Variables & Configuration Audit (Check First for Env Constants)
     env_match = re.search(r"\b([A-Z0-9_]{3,}_(?:KEY|SECRET|TOKEN|URL|PORT|HOST|ENV|CONFIG|PWD|PASSWORD|FILE|DIR))\b", query)
     if env_match or "environment variable" in q_lower or "os.getenv" in q_lower:
@@ -506,6 +511,9 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
             or tool_output.get("references")
             or (isinstance(tool_output.get("results"), list) and len(tool_output["results"]) > 0)
             or tool_output.get("snippet")
+            or tool_output.get("code")
+            or tool_output.get("total_affected_symbols", 0) > 0
+            or (isinstance(tool_output.get("detailed_nodes"), list) and len(tool_output["detailed_nodes"]) > 0)
         ):
             has_data = True
         elif tool_output.get("count", 0) > 0:
@@ -515,7 +523,13 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
     if has_data and "error" not in tool_output:
         print(f"   [+] [CASE A: Evidence Verified] Step {current_step['step_id']} satisfied acceptance criteria.")
 
-        if "raw_calls" in tool_output and tool_output["raw_calls"]:
+        if "detailed_nodes" in tool_output and tool_output["detailed_nodes"]:
+            syms = tool_output.get("changed_symbols", [])
+            total = tool_output.get("total_affected_symbols", 0)
+            summary_dict = tool_output.get("affected_files_summary", {})
+            file_lines = [f"  - In `{f}`: " + ", ".join(items) for f, items in summary_dict.items()]
+            fact_summary = f"Blast Radius for {syms} ({total} affected symbol(s)):\n" + "\n".join(file_lines)
+        elif "raw_calls" in tool_output and tool_output["raw_calls"]:
             fact_summary = f"Callers of '{current_step.get('tool_args', {}).get('target_symbol', '')}': " + ", ".join(
                 [f"{c.get('caller_name')}() in {c.get('caller_id', '').split('::')[0]}" for c in tool_output["raw_calls"]]
             )
@@ -556,9 +570,24 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
 
     # CASE B: Zero Evidence (First Failure, count == 0 -> Sibling Tool Retry)
     elif failure_count == 0:
-        print(f"   [!] [CASE B: Zero Evidence - Retry 1] Initial tool yielded 0 results. Switching to semantic vector fallback.")
+        step_args = current_step.get("tool_args", {})
+        sym = (
+            step_args.get("target_symbol")
+            or step_args.get("symbol_name")
+            or (step_args.get("changed_symbols")[0] if isinstance(step_args.get("changed_symbols"), list) and step_args.get("changed_symbols") else None)
+            or (step_args.get("changed_symbols") if isinstance(step_args.get("changed_symbols"), str) else None)
+            or step_args.get("function_name")
+            or step_args.get("class_symbol")
+            or step_args.get("module_name")
+        )
+        if sym:
+            focused_query = f"{sym} definition implementation in codebase"
+        else:
+            focused_query = current_step.get("hypothesis", state["query"])
+
+        print(f"   [!] [CASE B: Zero Evidence - Retry 1] Initial tool yielded 0 results. Switching to focused semantic vector fallback: '{focused_query}'")
         current_step["tool_name"] = "tool_search_codebase_semantic"
-        current_step["tool_args"] = {"query": state["query"]}
+        current_step["tool_args"] = {"query": focused_query}
         return {
             "consecutive_failures": 1,
             "plan": plan,

@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import json
 
 # Ensure repository root is on sys.path
@@ -87,64 +87,25 @@ def tool_traverse_call_graph(
 
 @tool
 def tool_calculate_blast_radius(
-    changed_symbols: List[str],
+    changed_symbols: Optional[Union[List[str], str]] = None,
+    target_symbol: Optional[str] = None,
     max_depth: int = 4,
     limit: int = 50,
 ) -> Dict[str, Any]:
     """
-    [Task #3] Calculates the blast radius and transitive impact of modifying symbols.
-    Traverses transitive reverse dependencies across :RESOLVED_CALLS, :IMPORTS, and :RESOLVED_INHERITS.
+    [Task #3] Calculates the blast radius and transitive impact of modifying symbols using Universal DP Traversal.
+    Accepts changed_symbols (list or string) or target_symbol (string).
+    Traverses transitive reverse dependencies across :RESOLVED_CALLS, :IMPORTS, :RESOLVED_INHERITS, and variable usages in O(V + E).
     """
-    db = _get_neo4j_session()
-    if not db:
-        return {"error": "Neo4j database connection unavailable", "changed_symbols": changed_symbols}
-
-    try:
-        with db.driver.session() as session:
-            cypher = """
-            UNWIND $symbols AS sym
-            MATCH path = (dependent)-[:RESOLVED_CALLS|CALLS|IMPORTS|RESOLVED_INHERITS*1..4]->(target)
-            WHERE target.name = sym 
-               OR target.file_path CONTAINS sym
-               OR target.name ENDS WITH ('.' + sym)
-            RETURN DISTINCT 
-                dependent.name AS name, 
-                labels(dependent)[0] AS type, 
-                dependent.file_path AS file_path, 
-                dependent.line_start AS line_start,
-                length(path) AS distance
-            ORDER BY distance ASC
-            LIMIT $limit
-            """
-            records = session.run(cypher, symbols=changed_symbols, limit=limit)
-            affected = [
-                {
-                    "name": r["name"],
-                    "type": r["type"],
-                    "file_path": r["file_path"],
-                    "line": r["line_start"],
-                    "distance": r["distance"],
-                }
-                for r in records
-            ]
-            
-            # Group by file path
-            by_file: Dict[str, List[str]] = {}
-            for item in affected:
-                f = item["file_path"] or "unknown"
-                by_file.setdefault(f, []).append(f"{item['type']} {item['name']} (hop {item['distance']})")
-
-            return {
-                "changed_symbols": changed_symbols,
-                "total_affected_symbols": len(affected),
-                "total_affected_files": len(by_file),
-                "affected_files_summary": by_file,
-                "detailed_nodes": affected,
-            }
-    except Exception as e:
-        return {"error": str(e), "changed_symbols": changed_symbols}
-    finally:
-        db.close()
+    symbols_input = changed_symbols or target_symbol or ["unknown"]
+    with CallGraphTraversal() as engine:
+        return engine.traverse_graph_dp(
+            symbols=symbols_input,
+            direction="incoming",
+            edge_types=None,  # None selects ALL graph edges
+            max_depth=max_depth,
+            limit=limit,
+        )
 
 
 @tool
