@@ -11,6 +11,7 @@ import os
 import re
 import sys
 from typing import Any, Dict, List, Optional
+import json
 
 # Ensure repository root is on sys.path
 _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -25,10 +26,6 @@ from langchain_core.tools import tool
 
 from pipeline.graph_traversal import CallGraphTraversal, traverse_call_graph
 from pipeline.neo4j_sink import Neo4jCodeGraphIngestor
-from pipeline.tools_utils import (
-    ExecutionStrategy,
-    TASK_DEFINITIONS,
-)
 from pipeline.weaviate_sink import WeaviateCloudCodeDB
 
 
@@ -59,275 +56,9 @@ def _get_weaviate_client():
         print(f"[Warning] Could not connect to Weaviate: {e}")
         return None
 
-
-# -----------------------------------------------------------------------------
-# Intent Classifier
-# -----------------------------------------------------------------------------
-
-from pydantic import BaseModel, Field
-from pipeline.utils import get_llm
-
-
-class IntentClassificationSchema(BaseModel):
-    """Structured output schema for LLM Intent Classification."""
-    task_id: Optional[int] = Field(
-        None,
-        description="The integer task ID (1-20) matching the task catalog, or null if the query is open-ended or exploratory."
-    )
-    target_symbols: List[str] = Field(
-        default_factory=list,
-        description="Extracted code identifiers, function names, class names, dot-attributes, or configuration constants."
-    )
-    confidence: float = Field(
-        0.95,
-        description="Confidence score between 0.0 and 1.0."
-    )
-    reasoning: str = Field(
-        ...,
-        description="Brief 1-sentence reasoning explaining why this task and strategy were selected."
-    )
-
-
-class CodeIntentClassifier:
-    """
-    LLM-powered Classifier that presents all 20 Task Definitions to the model
-    and extracts structured routing decisions and target code symbols.
-    """
-
-    def __init__(self):
-        self.task_defs = TASK_DEFINITIONS
-        self._prompt_catalog = self._build_task_catalog_prompt()
-
-    def _build_task_catalog_prompt(self) -> str:
-        lines = []
-        for task_id, task in sorted(self.task_defs.items()):
-            lines.append(f"- Task #{task_id:02d}: {task['name']}")
-        return "\n".join(lines)
-
-    def classify(self, query: str) -> Dict[str, Any]:
-        """
-        Presents all 20 Task Definitions to the LLM to classify the user's intent.
-        """
-        system_instruction = (
-            "You are CodeNavigator's Intent Router. Your job is to analyze a developer's codebase query, "
-            "classify it into exactly one of the 20 predefined Code Intelligence Tasks, and extract all relevant target code symbols.\n\n"
-            "Task Classification Taxonomy & Disambiguation Rules:\n"
-            "1. Task #01 (Upstream Call Tracing): Finding which callers or functions invoke/call a given function or method.\n"
-            "2. Task #02 (Downstream Call Tracing): Finding what downstream functions or dependencies a given function invoke/call.\n"
-            "3. Task #03 (Blast Radius & Impact Analysis): Finding what breaks, impact analysis, or affected downstream modules when modifying a symbol.\n"
-            "4. Task #04 (Function Parameter & Argument Lineage): Tracing how specific arguments or parameters are passed into a function across call sites.\n"
-            "5. Task #05 (Class Instance Attribute Mutability): Finding where class instance attributes (`self.`) are initialized, read, or modified.\n"
-            "6. Task #06 (Inherited Class Attribute Resolution): Resolving attributes, methods, or `super()` calls inherited from parent classes.\n"
-            "7. Task #07 (Global & Module-Level Variable Audit): Finding where module-level globals or module constants are declared, read, or modified.\n"
-            "8. Task #08 (Local Variable Initialization & Defaults): Inspecting local variable defaults, fallback initial values, and timeouts in a function.\n"
-            "9. Task #09 (Environment Variables & Configuration Audit): Auditing where environment variables, secrets, API keys, tokens, or config parameters are accessed.\n"
-            "10. Task #10 (Data Flow & Variable Expression Lineage): Tracing mathematical formulas, expression derivations, and intermediate variable dependencies.\n"
-            "11. Task #11 (State Mutation & Reassignment Tracing): Tracking where mutable objects (lists, dicts, instances) are mutated in-place or reassigned.\n"
-            "12. Task #12 (Module & Architecture Coupling): Finding circular imports, cross-module dependencies, and architectural layer boundaries.\n"
-            "13. Task #13 (Dead Code & Orphan Identification): Locating uncalled functions, unused imports, and zero-in-degree dead code.\n"
-            "14. Task #14 (Security & Vulnerability Path Tracking): Taint analysis from untrusted user inputs to sensitive sinks (e.g. SQL injection, command execution).\n"
-            "15. Task #15 (Error Handling & Exception Propagation): Tracing try/except blocks, unhandled exceptions, and error propagation paths.\n"
-            "16. Task #16 (Business Logic & Concept Explanation): Explaining high-level domain workflows, features, and business logic mechanisms.\n"
-            "17. Task #17 (Type & Class Hierarchy Inspection): Inspecting class inheritance trees, subclasses, dataclasses, structs, and enum usages.\n"
-            "18. Task #18 (Performance & Bottleneck Spotting): Spotting nested loops, redundant iterations, and expensive queries inside loops.\n"
-            "19. Task #19 (Test Coverage & Traceability): Identifying unit tests or test files that cover or invoke a given function or class.\n"
-            "20. Task #20 (API Contract & Interface Surface): Auditing REST API endpoints, HTTP routes, methods (GET/POST), and request schemas.\n\n"
-            "Routing Instructions:\n"
-            "- Select the exact integer `task_id` (1 to 20) corresponding to the rule above.\n"
-            "- If the query is an open-ended refactoring or design question without a task match, set `task_id` to null.\n"
-            "- Extract all target symbols (function names, class names, dot-attributes, or configuration identifiers) into `target_symbols`.\n"
-            "- Provide a clear 1-sentence `reasoning` explaining your classification decision."
-        )
-
-        try:
-            llm = get_llm(temperature=0.0)
-            task_id = None
-            symbols = []
-            confidence = 0.95
-            reasoning = "LLM Classification"
-
-            # Attempt native structured output (Gemini, OpenAI, Anthropic, Ollama)
-            try:
-                structured_llm = llm.with_structured_output(IntentClassificationSchema)
-                parsed: IntentClassificationSchema = structured_llm.invoke([
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": f"Classify this developer query:\n\"{query}\""}
-                ])
-                task_id = parsed.task_id
-                symbols = parsed.target_symbols
-                confidence = parsed.confidence
-                reasoning = parsed.reasoning
-            except Exception:
-                # Resilient JSON parsing & Pydantic validation for Local HuggingFace models
-                from langchain_core.output_parsers import PydanticOutputParser
-                parser = PydanticOutputParser(pydantic_object=IntentClassificationSchema)
-
-                prompt = (
-                    f"{system_instruction}\n\n"
-                    f"{parser.get_format_instructions()}\n\n"
-                    f'Developer Query: "{query}"\n'
-                )
-                response = llm.invoke(prompt)
-                raw_text = response.content if hasattr(response, "content") else str(response)
-                
-                # 1. Extract and parse JSON block from output
-                data = {}
-                match = re.search(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", raw_text, re.DOTALL)
-                if match:
-                    try:
-                        data = json.loads(match.group(0))
-                    except Exception:
-                        pass
-
-                if not data:
-                    # Fallback regex extraction if JSON decoding failed
-                    tid_m = re.search(r'"task_id"\s*:\s*(\d+|null|"[^"]+")', raw_text)
-                    raw_tid_val = tid_m.group(1).replace('"', '') if tid_m else None
-                    digit_m = re.search(r"\d+", str(raw_tid_val)) if raw_tid_val else None
-                    
-                    data = {
-                        "task_id": int(digit_m.group(0)) if digit_m else None,
-                        "target_symbols": [],
-                        "confidence": 0.95,
-                        "reasoning": raw_text[:200]
-                    }
-
-                # 2. Coerce task_id if represented as "09", "Task 9", or float
-                raw_tid = data.get("task_id")
-                if raw_tid is not None:
-                    digit_match = re.search(r"\d+", str(raw_tid))
-                    data["task_id"] = int(digit_match.group(0)) if digit_match else None
-                
-                # 3. Fallback extraction for target_symbols if empty
-                if not data.get("target_symbols"):
-                    stop_words = {"who", "what", "where", "which", "how", "calls", "called", "call", "invokes", "invoked", "invoke", "is", "are", "read", "from", "in", "the", "a", "an", "does", "if", "modify", "change", "set", "get", "to", "of", "and", "or", "with", "does", "do", "it"}
-                    word_candidates = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_\.]*)\b", query)
-                    data["target_symbols"] = [w for w in word_candidates if w.lower() not in stop_words]
-
-                # 4. Validate with Pydantic Schema
-                parsed = IntentClassificationSchema(**data)
-                task_id = parsed.task_id
-                symbols = parsed.target_symbols
-                confidence = parsed.confidence
-                reasoning = parsed.reasoning
-
-            # Semantic alignment: Ensure task_id matches the LLM's own reasoning for all 20 tasks
-            r_lower = reasoning.lower() + " " + query.lower()
-            if any(k in r_lower for k in ["secret", "environment variable", "env var", "config token", "api key", "os.getenv"]) and task_id != 9:
-                task_id = 9
-            elif any(k in r_lower for k in ["who calls", "caller", "incoming call", "invoked by"]) and task_id != 1:
-                task_id = 1
-            elif any(k in r_lower for k in ["what does .* call", "callee", "outgoing call", "dependencies called"]) and task_id != 2:
-                task_id = 2
-            elif any(k in r_lower for k in ["blast radius", "impact analysis", "what breaks", "affect downstream"]) and task_id != 3:
-                task_id = 3
-            elif any(k in r_lower for k in ["parameter lineage", "argument passed", "parameter passed"]) and task_id != 4:
-                task_id = 4
-            elif any(k in r_lower for k in ["self.", "instance attribute", "attribute mutability"]) and task_id != 5:
-                task_id = 5
-            elif any(k in r_lower for k in ["super()", "inherited attribute", "parent class attribute"]) and task_id != 6:
-                task_id = 6
-            elif any(k in r_lower for k in ["global variable", "module variable", "global constant"]) and task_id != 7:
-                task_id = 7
-            elif any(k in r_lower for k in ["default value", "initial value", "default timeout", "hardcoded default"]) and task_id != 8:
-                task_id = 8
-            elif any(k in r_lower for k in ["data flow", "formula", "expression derivation", "variable derivation"]) and task_id != 10:
-                task_id = 10
-            elif any(k in r_lower for k in ["state mutation", "mutated in-place", "reassignment tracing"]) and task_id != 11:
-                task_id = 11
-            elif any(k in r_lower for k in ["circular import", "module coupling", "architectural boundary"]) and task_id != 12:
-                task_id = 12
-            elif any(k in r_lower for k in ["dead code", "orphan function", "uncalled function", "unused code"]) and task_id != 13:
-                task_id = 13
-            elif any(k in r_lower for k in ["taint", "vulnerability", "sql injection", "security path"]) and task_id != 14:
-                task_id = 14
-            elif any(k in r_lower for k in ["try/except", "exception propagation", "error handling", "unhandled exception"]) and task_id != 15:
-                task_id = 15
-            elif any(k in r_lower for k in ["business logic", "explain workflow", "how does .* work", "concept explanation"]) and task_id != 16:
-                task_id = 16
-            elif any(k in r_lower for k in ["class hierarchy", "subclasses of", "inheritance tree", "dataclass"]) and task_id != 17:
-                task_id = 17
-            elif any(k in r_lower for k in ["performance bottleneck", "nested loop", "loop bottleneck"]) and task_id != 18:
-                task_id = 18
-            elif any(k in r_lower for k in ["test coverage", "unit test", "tests invoke", "test file"]) and task_id != 19:
-                task_id = 19
-            elif any(k in r_lower for k in ["rest endpoint", "api route", "http method", "api contract"]) and task_id != 20:
-                task_id = 20
-
-            if task_id and task_id in self.task_defs:
-                task_info = self.task_defs[task_id]
-                return {
-                    "query": query,
-                    "task_id": task_id,
-                    "task_name": task_info["name"],
-                    "strategy": task_info["strategy"].value if hasattr(task_info["strategy"], "value") else str(task_info["strategy"]),
-                    "expected_turns": task_info["expected_turns"],
-                    "recommended_tools": task_info["recommended_tools"],
-                    "allowed_tools": self._filter_allowed_tools(task_info),
-                    "target_symbols": symbols,
-                    "workflow_recipe": task_info.get("recipe"),
-                    "confidence": confidence,
-                    "explanation": f"LLM Classification: {reasoning}",
-                }
-            else:
-                return self._react_fallback(query, symbols, reasoning=reasoning)
-
-        except Exception as e:
-            return self._react_fallback(query, [], reasoning=f"LLM classification exception ({e}). Defaulted to ReAct loop.")
-
-    def _react_fallback(self, query: str, symbols: List[str], reasoning: str = "Open-ended exploration") -> Dict[str, Any]:
-        all_tool_names = [
-            "tool_traverse_call_graph", "tool_calculate_blast_radius",
-            "tool_inspect_type_and_inheritance_hierarchy", "tool_query_variable_and_state_references",
-            "tool_analyze_architecture_coupling", "tool_detect_orphan_and_dead_code",
-            "tool_trace_taint_and_security_paths", "tool_query_test_traceability",
-            "tool_query_api_endpoints", "tool_search_codebase_semantic",
-            "tool_get_symbol_code_snippet", "tool_trace_parameter_lineage"
-        ]
-        return {
-            "query": query,
-            "task_id": None,
-            "task_name": "Open-Ended / Exploratory Query",
-            "strategy": ExecutionStrategy.REACT_FALLBACK.value,
-            "expected_turns": -1,
-            "recommended_tools": ["tool_search_codebase_semantic", "tool_traverse_call_graph"],
-            "allowed_tools": all_tool_names,
-            "target_symbols": symbols,
-            "workflow_recipe": None,
-            "confidence": 0.60,
-            "explanation": f"Routed to ReAct loop: {reasoning}",
-        }
-
-    def _filter_allowed_tools(self, task_info: Dict[str, Any]) -> List[str]:
-        tools = list(task_info["recommended_tools"])
-        if "tool_get_symbol_code_snippet" not in tools and "get_symbol_code_snippet" not in tools:
-            tools.append("tool_get_symbol_code_snippet")
-        normalized_tools = []
-        for t in tools:
-            if not t.startswith("tool_"):
-                normalized_tools.append(f"tool_{t}")
-            else:
-                normalized_tools.append(t)
-        return normalized_tools
-
-
-def classify_intent(query: str) -> Dict[str, Any]:
-    """Classifies a user developer query into execution tiers and recommended tools."""
-    classifier = CodeIntentClassifier()
-    return classifier.classify(query)
-
-
 # -----------------------------------------------------------------------------
 # LangChain Tools (The 20-Task Suite)
 # -----------------------------------------------------------------------------
-
-@tool
-def tool_classify_intent(query: str) -> Dict[str, Any]:
-    """
-    Classifies a developer question into execution tiers (DETERMINISTIC_1_SHOT, GUIDED_RECIPE, REACT_FALLBACK).
-    Returns task name, execution strategy, recommended tools, and workflow recipes.
-    """
-    return classify_intent(query)
 
 
 @tool
@@ -859,7 +590,6 @@ def tool_query_api_endpoints(
 # -----------------------------------------------------------------------------
 
 ALL_TOOLS = [
-    tool_classify_intent,
     tool_traverse_call_graph,
     tool_calculate_blast_radius,
     tool_trace_parameter_lineage,
