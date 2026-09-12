@@ -6,7 +6,6 @@ Extracts structural nodes from a Python AST for code graph ingestion.
 import os
 from tree_sitter import Language, Query, QueryCursor
 import tree_sitter_python as tspython
-from pipeline.utils import _detect_env_var
 
 from pipeline.parser import ParsedFile
 from pipeline.utils import is_internal, _extract_all_env_vars

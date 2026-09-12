@@ -10,7 +10,7 @@ Consolidates logic that was duplicated across ASTNodeFetcher and ASTEdgeFetcher:
 
 import os
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict
 
 
 def extract_string(node) -> str:
@@ -37,21 +37,8 @@ def detect_env_var(node) -> str | None:
 
     Returns the env var name if found, None otherwise.
     """
-    if node.type == "call":
-        func = node.child_by_field_name("function")
-        args = node.child_by_field_name("arguments")
-        if func and args and _is_env_call(func):
-            pos_args = [c for c in args.children if c.type not in ("(", ")", ",")]
-            if pos_args and pos_args[0].type == "string":
-                return extract_string(pos_args[0])
-
-    elif node.type == "subscript":
-        val = node.child_by_field_name("value")
-        sub = node.child_by_field_name("subscript") or node.child_by_field_name("index")
-        if val and sub and _is_os_environ(val) and sub.type == "string":
-            return extract_string(sub)
-
-    return None
+    name, _ = _detect_env_var(node)
+    return name
 
 
 def _detect_env_var(node) -> tuple[str | None, str | None]:
@@ -169,9 +156,7 @@ def is_internal(mod_name: str, file_path: str, project_root: str = None) -> bool
     candidate_dirs.append(os.getcwd())
 
     if file_path:
-        file_dir = os.path.dirname(os.path.abspath(file_path))
-        candidate_dirs.append(file_dir)
-        curr = file_dir
+        curr = os.path.dirname(os.path.abspath(file_path))
         while curr:
             candidate_dirs.append(curr)
             # Stop at project root markers
@@ -235,13 +220,14 @@ def _is_os_environ(val_node) -> bool:
     return False
 
 
-def _get_class_info(self, node, file_path):
-        name_n = node.child_by_field_name("name")
-        c_name = name_n.text.decode("utf8") if name_n else None
-        class_id = f"{file_path}::{c_name}" if c_name else file_path
-        return c_name, class_id
+def _get_class_info(node, file_path):
+    name_n = node.child_by_field_name("name")
+    c_name = name_n.text.decode("utf8") if name_n else None
+    class_id = f"{file_path}::{c_name}" if c_name else file_path
+    return c_name, class_id
 
-def _get_func_id(self, node, file_path, current_class_name):
+
+def _get_func_id(node, file_path, current_class_name):
     name_n = node.child_by_field_name("name")
     if not name_n:
         return None
@@ -250,11 +236,12 @@ def _get_func_id(self, node, file_path, current_class_name):
         return f"{file_path}::{current_class_name}.{fn_name}"
     return f"{file_path}::{fn_name}"
 
-def _collect_scope_vars(self, func_node):
+
+def _collect_scope_vars(func_node):
     """Scans a function definition to find local variables and explicit globals to prevent shadowing."""
     explicit_globals = set()
     local_vars = set()
-    
+
     # 1. Add function parameters to local variables
     params_node = func_node.child_by_field_name("parameters")
     if params_node:
@@ -265,12 +252,12 @@ def _collect_scope_vars(self, func_node):
     def shallow_walk(n):
         if n.type in ("function_definition", "class_definition"):
             return  # Do not enter nested scopes
-            
+
         if n.type == "global_statement":
             for child in n.children:
                 if child.type == "identifier":
                     explicit_globals.add(child.text.decode("utf8"))
-                    
+
         elif n.type in ("assignment", "annotated_assignment", "augmented_assignment"):
             # Check left hand side of assignment
             left = n.child_by_field_name("left") or n.child_by_field_name("name")
@@ -280,14 +267,15 @@ def _collect_scope_vars(self, func_node):
                     local_vars.add(name)
         for child in n.children:
             shallow_walk(child)
-            
+
     body = func_node.child_by_field_name("body")
     if body:
         shallow_walk(body)
-        
+
     return explicit_globals, local_vars
 
-def _extract_call_edge(self, node, current_scope_id, edges):
+
+def _extract_call_edge(node, current_scope_id, edges):
     if node.type == "call":
         func_n = node.child_by_field_name("function")
         if func_n:
@@ -307,7 +295,8 @@ def _extract_call_edge(self, node, current_scope_id, edges):
                     "line": node.start_point[0] + 1
                 })
 
-def _extract_env_edge(self, node, current_scope_id, edges):
+
+def _extract_env_edge(node, current_scope_id, edges):
     # Assumes detect_env_var is defined elsewhere in the file
     env_name = detect_env_var(node)
     if env_name:
@@ -317,7 +306,8 @@ def _extract_env_edge(self, node, current_scope_id, edges):
             "target": f"ENV::{env_name}"
         })
 
-def _extract_variable_usage(self, node, current_scope_id, local_vars, edges):
+
+def _extract_variable_usage(node, current_scope_id, local_vars, edges):
     if node.type == "identifier":
         name = node.text.decode("utf8")
         if name not in local_vars and name != "self":
@@ -327,7 +317,8 @@ def _extract_variable_usage(self, node, current_scope_id, local_vars, edges):
                 "target": name
             })
 
-def _extract_instance_attribute_usage(self, node, current_scope_id, edges):
+
+def _extract_instance_attribute_usage(node, current_scope_id, edges):
     if node.type == "attribute":
         obj_n = node.child_by_field_name("object")
         if obj_n and obj_n.type == "identifier" and obj_n.text.decode("utf8") == "self":
