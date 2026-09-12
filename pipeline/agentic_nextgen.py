@@ -25,6 +25,11 @@ from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Local utilities & tool registry
 from pipeline.tools import (
     ALL_TOOLS,
@@ -276,32 +281,61 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
         return {"fast_path_hit": True, "fast_path_result": ans}
 
     # 9. Task #13: Dead Code & Orphan Identification
-    if any(k in q_lower for k in ["dead code", "orphan function", "unused function", "uncalled function", "orphan class"]):
-        print(f"  [*] [Fast-Path #13: Dead Code Detection] Querying uncalled functions (0 incoming callers)...")
-        res = tool_detect_orphan_and_dead_code.invoke({})
-        orphans = res.get("orphans", [])
-        if orphans:
-            ans = f"Detected {len(orphans)} orphan/dead function(s) with zero incoming callers:\n\n" + "\n".join(
-                [f"  - Function: `{o.get('name')}` in `{o.get('file_path')}`" for o in orphans[:15]]
-            )
-        else:
-            ans = "No orphan or dead code functions were identified in the ingested codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
+    if any(k in q_lower for k in ["dead code", "orphan function", "unused function", "uncalled function", "orphan class", "dead class", "unused class", "unused variable", "dead variable", "unused file", "orphan file", "unused env"]):
+        print(f"  [*] [Fast-Path #13: Dead Code & Entity Audit] Querying unreachable and dead entities via DP...")
+        res = tool_detect_orphan_and_dead_code.invoke({"entity_type": "all", "use_dp_reachability": True})
+        
+        dead_fns = res.get("dead_functions", [])
+        dead_classes = res.get("dead_classes", [])
+        dead_files = res.get("dead_files", [])
+        dead_envs = res.get("dead_env_vars", [])
+        dead_vars = res.get("dead_variables", [])
 
-    # 10. Task #17: Type & Class Hierarchy Inspection
-    sym = _extract_symbol(r"(?:classes inherit from|subclasses of|class hierarchy of)\s+([a-zA-Z0-9_]+)")
-    if sym or "class hierarchy" in q_lower or "subclasses of" in q_lower:
+        sections = [f"### Codebase Dead Code & Unused Entity Audit ({res.get('total_dead_entities', 0)} total detected):\n"]
+        if dead_fns:
+            sections.append(f"**Dead / Unreachable Functions ({len(dead_fns)} found):**\n" + "\n".join([f"  - `{f.get('name')}()` in `{f.get('file_path')}` (Line {f.get('line')})" for f in dead_fns[:10]]))
+        if dead_classes:
+            sections.append(f"\n**Dead / Uninstantiated Classes ({len(dead_classes)} found):**\n" + "\n".join([f"  - `{c.get('name')}` in `{c.get('file_path')}`" for c in dead_classes[:5]]))
+        if dead_files:
+            sections.append(f"\n**Dead / Orphan Files ({len(dead_files)} found):**\n" + "\n".join([f"  - `{f.get('name')}` (`{f.get('file_path')}`)" for f in dead_files[:5]]))
+        if dead_envs:
+            sections.append(f"\n**Dead / Unreferenced Environment Variables ({len(dead_envs)} found):**\n" + "\n".join([f"  - `{e.get('name')}`" for e in dead_envs[:5]]))
+        if dead_vars:
+            sections.append(f"\n**Dead / Unused Module Variables ({len(dead_vars)} found):**\n" + "\n".join([f"  - `{v.get('name')}` in `{v.get('file_path')}`" for v in dead_vars[:5]]))
+
+        return {"fast_path_hit": True, "fast_path_result": "\n".join(sections)}
+
+    # 10. Task #17: Type & Class Hierarchy & Methods Inspection
+    sym = _extract_symbol(r"(?:classes inherit from|subclasses of|class hierarchy of|inheritance hierarchy of|class inheritance hierarchy and methods of|inheritance hierarchy and methods of|class hierarchy and methods of|methods of)\s+([a-zA-Z0-9_]+)")
+    if not sym:
+        sym = _extract_symbol(r"(?:inspect|check|find)\s+(?:the\s+)?(?:class\s+)?(?:inheritance\s+)?(?:hierarchy\s+)?(?:and\s+methods\s+)?(?:of\s+)?([A-Z][a-zA-Z0-9_]+)")
+    if sym or "class hierarchy" in q_lower or "inheritance hierarchy" in q_lower or "subclasses of" in q_lower:
         target = sym or query.split()[-1].strip("?'\"")
-        print(f"  [*] [Fast-Path #17: Class Hierarchy] Inspecting subclasses of '{target}'")
+        print(f"  [*] [Fast-Path #17: Class Hierarchy & Methods] Inspecting hierarchy & methods for '{target}'")
         res = tool_inspect_type_and_inheritance_hierarchy.invoke({"symbol_name": target})
+        superclasses = res.get("superclasses", [])
         subclasses = res.get("subclasses", [])
-        if subclasses:
-            ans = f"Subclasses inheriting from **`{target}`** ({len(subclasses)} found):\n\n" + "\n".join(
-                [f"  - `{s.get('name')}` in `{s.get('file_path')}`" for s in subclasses]
-            )
+        methods = res.get("methods", [])
+        paths = res.get("inheritance_paths", [])
+
+        sections = [f"Class Hierarchy & Method Breakdown for **`{target}`**:\n"]
+        if superclasses:
+            sections.append(f"**Superclasses / Ancestors ({len(superclasses)} found):**\n" + "\n".join([f"  - `{s.get('name')}` (depth {s.get('distance', 1)}) in `{s.get('file') or 'External'}`" for s in superclasses]))
         else:
-            ans = f"No subclasses inheriting from **`{target}`** found in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
+            sections.append("**Superclasses / Ancestors:** None (Root class)")
+
+        if subclasses:
+            sections.append(f"\n**Subclasses / Descendants ({len(subclasses)} found):**\n" + "\n".join([f"  - `{s.get('name')}` (depth {s.get('distance', 1)}) in `{s.get('file') or 'External'}`" for s in subclasses]))
+        else:
+            sections.append("\n**Subclasses / Descendants:** None")
+
+        if methods:
+            sections.append(f"\n**Direct Methods ({len(methods)} found):**\n" + "\n".join([f"  - `{m.get('method')}()` (Line {m.get('line')}) in `{m.get('file') or 'Unknown'}`" for m in methods]))
+        
+        if paths:
+            sections.append(f"\n**Inheritance Execution Chains:**\n" + "\n".join([f"  - `{p.get('execution_chain')}` (depth {p.get('depth')})" for p in paths[:5]]))
+
+        return {"fast_path_hit": True, "fast_path_result": "\n".join(sections)}
 
     # 11. Task #20: API Contract & Interface Surface
     if any(k in q_lower for k in ["rest endpoint", "api endpoint", "what routes", "http method", "api surface"]):
@@ -514,6 +548,16 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
             or tool_output.get("code")
             or tool_output.get("total_affected_symbols", 0) > 0
             or (isinstance(tool_output.get("detailed_nodes"), list) and len(tool_output["detailed_nodes"]) > 0)
+            or (isinstance(tool_output.get("superclasses"), list) and len(tool_output["superclasses"]) > 0)
+            or (isinstance(tool_output.get("subclasses"), list) and len(tool_output["subclasses"]) > 0)
+            or (isinstance(tool_output.get("methods"), list) and len(tool_output["methods"]) > 0)
+            or (isinstance(tool_output.get("inheritance_paths"), list) and len(tool_output["inheritance_paths"]) > 0)
+            or (isinstance(tool_output.get("endpoints"), list) and len(tool_output["endpoints"]) > 0)
+            or (isinstance(tool_output.get("orphans"), list) and len(tool_output["orphans"]) > 0)
+            or (isinstance(tool_output.get("circular_dependencies"), list) and len(tool_output["circular_dependencies"]) > 0)
+            or tool_output.get("total_ancestors", 0) > 0
+            or tool_output.get("total_descendants", 0) > 0
+            or tool_output.get("total_methods", 0) > 0
         ):
             has_data = True
         elif tool_output.get("count", 0) > 0:
@@ -523,7 +567,20 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
     if has_data and "error" not in tool_output:
         print(f"   [+] [CASE A: Evidence Verified] Step {current_step['step_id']} satisfied acceptance criteria.")
 
-        if "detailed_nodes" in tool_output and tool_output["detailed_nodes"]:
+        if "superclasses" in tool_output or "subclasses" in tool_output or "methods" in tool_output:
+            cls_name = tool_output.get("class", current_step.get("tool_args", {}).get("symbol_name", "Target"))
+            parents_str = ", ".join([f"{p.get('name')} (depth {p.get('distance', 1)})" for p in tool_output.get("superclasses", [])]) or "None"
+            children_str = ", ".join([f"{c.get('name')} (depth {c.get('distance', 1)})" for c in tool_output.get("subclasses", [])]) or "None"
+            methods_str = ", ".join([f"{m.get('method')}() (L{m.get('line', '')})" for m in tool_output.get("methods", [])]) or "None"
+            paths_str = "\n".join([f"    - {p.get('execution_chain')}" for p in tool_output.get("inheritance_paths", [])[:5]])
+            fact_summary = (
+                f"Class Hierarchy & Method Breakdown for `{cls_name}`:\n"
+                f"  - Superclasses (Ancestors): {parents_str}\n"
+                f"  - Subclasses (Descendants): {children_str}\n"
+                f"  - Direct Methods: {methods_str}\n"
+                + (f"  - Inheritance Paths:\n{paths_str}" if paths_str else "")
+            )
+        elif "detailed_nodes" in tool_output and tool_output["detailed_nodes"]:
             syms = tool_output.get("changed_symbols", [])
             total = tool_output.get("total_affected_symbols", 0)
             summary_dict = tool_output.get("affected_files_summary", {})
@@ -622,6 +679,15 @@ def final_synthesis_and_memory_commit_node(state: BlackboardState) -> Dict[str, 
     if not facts:
         final_text = f"Based on knowledge graph traversals and semantic search, no occurrences or references were found for query: \"{query}\" in the ingested codebase."
     else:
+        # Deduplicate facts
+        dedup_facts = []
+        seen_fact_texts = set()
+        for f in facts:
+            txt = f.get("fact", "")
+            if txt and txt not in seen_fact_texts:
+                seen_fact_texts.add(txt)
+                dedup_facts.append(f)
+
         try:
             llm = get_llm(temperature=0.0)
             prompt = (
@@ -633,14 +699,14 @@ def final_synthesis_and_memory_commit_node(state: BlackboardState) -> Dict[str, 
                 "- Do NOT assume, speculate, or fabricate any rules, formulas, or parameters not present in the facts.\n\n"
                 f"Developer Query: {query}\n\n"
                 "Verified Blackboard Facts:\n"
-                + "\n".join([f"- {f['fact']}" for f in facts])
+                + "\n".join([f"- {f['fact']}" for f in dedup_facts])
                 + "\n\nSynthesized Explanation:"
             )
             res = llm.invoke(prompt)
             final_text = res.content if hasattr(res, "content") else str(res)
         except Exception:
-            fact_lines = "\n".join([f"- {f['fact']}" for f in facts])
-            final_text = f"### Code Analysis Findings:\n\n{fact_lines}"
+            fact_lines = "\n\n".join([f"- {f['fact']}" for f in dedup_facts])
+            final_text = f"### Verified Codebase Findings for `{query}`:\n\n{fact_lines}"
 
     if constraints:
         constraint_lines = "\n".join([f"- {c}" for c in constraints])

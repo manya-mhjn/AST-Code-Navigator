@@ -65,7 +65,7 @@ def _get_weaviate_client():
 def tool_traverse_call_graph(
     target_symbol: str,
     direction: str = "incoming",
-    max_depth: int = 3,
+    max_depth: int = 30,
     file_path: Optional[str] = None,
     include_raw: bool = True,
     limit: int = 50,
@@ -89,7 +89,7 @@ def tool_traverse_call_graph(
 def tool_calculate_blast_radius(
     changed_symbols: Optional[Union[List[str], str]] = None,
     target_symbol: Optional[str] = None,
-    max_depth: int = 4,
+    max_depth: int = 30,
     limit: int = 50,
 ) -> Dict[str, Any]:
     """
@@ -112,33 +112,59 @@ def tool_calculate_blast_radius(
 def tool_trace_parameter_lineage(
     function_name: str,
     parameter_name: str,
-    max_depth: int = 2,
+    max_depth: int = 30,
+    limit: int = 50,
 ) -> Dict[str, Any]:
     """
-    [Task #4] Traces argument values and lineage for a specific function parameter across callers.
+    [Task #4] Traces argument values and lineage for a specific function parameter across callers up to max_depth hops using DP.
     """
-    db = _get_neo4j_session()
+    with CallGraphTraversal() as engine:
+        res = engine.traverse_graph_dp(
+            symbols=function_name,
+            direction="incoming",
+            edge_types=["RESOLVED_CALLS", "CALLS"],
+            source_labels=["Function"],
+            max_depth=max_depth,
+            limit=limit,
+        )
+
     callers = []
-    if db:
-        try:
-            with db.driver.session() as session:
-                cypher = """
-                MATCH (fn:Function {name: $fn_name})<-[:RESOLVED_CALLS|CALLS]-(caller)
-                RETURN caller.name AS caller_name, caller.file_path AS file_path, caller.line_start AS line_start
-                LIMIT 20
-                """
-                records = session.run(cypher, fn_name=function_name)
-                callers = [{"caller": r["caller_name"], "file": r["file_path"], "line": r["line_start"]} for r in records]
-        except Exception as e:
-            print(f"[Warning] Error querying callers in Neo4j: {e}")
-        finally:
-            db.close()
+    # 1. Collect from raw calls
+    for r in res.get("raw_calls", []):
+        callers.append({
+            "caller": r.get("caller_name"),
+            "file": r.get("file_path"),
+            "line": r.get("line"),
+            "distance": r.get("distance", 1),
+        })
+
+    # 2. Collect from resolved unique nodes (excluding target itself)
+    for n in res.get("detailed_nodes", []):
+        if n.get("name") != function_name and n.get("distance", 0) > 0:
+            callers.append({
+                "caller": n.get("name"),
+                "file": n.get("file_path"),
+                "line": n.get("line"),
+                "distance": n.get("distance"),
+            })
+
+    # Deduplicate callers
+    dedup_callers = []
+    seen = set()
+    for c in callers:
+        k = (c.get("caller"), c.get("file"), c.get("line"))
+        if k not in seen:
+            seen.add(k)
+            dedup_callers.append(c)
 
     return {
         "function_name": function_name,
         "parameter_name": parameter_name,
-        "caller_call_sites": callers,
-        "lineage_summary": f"Parameter '{parameter_name}' in '{function_name}' is invoked by {len(callers)} caller(s). Inspect caller snippets for explicit argument binding.",
+        "max_depth": max_depth,
+        "total_call_sites": len(dedup_callers),
+        "caller_call_sites": dedup_callers[:limit],
+        "execution_paths": res.get("paths", [])[:limit],
+        "lineage_summary": f"Parameter '{parameter_name}' in '{function_name}' is invoked across {len(dedup_callers)} call site(s) up to {max_depth} hop(s). Inspect caller snippets for explicit argument binding.",
     }
 
 
@@ -200,50 +226,121 @@ def tool_query_variable_and_state_references(
 
 @tool
 def tool_inspect_type_and_inheritance_hierarchy(
-    class_symbol: str,
+    symbol_name: Optional[str] = None,
+    class_symbol: Optional[str] = None,
     direction: str = "both",
+    max_depth: int = 30,
+    limit: int = 50,
 ) -> Dict[str, Any]:
     """
-    [Tasks #6, #17] Inspects class inheritance and type hierarchies.
-    Traverses :RESOLVED_INHERITS (superclasses and subclasses) and retrieves :HAS_METHOD links.
+    [Tasks #6, #17] Inspects class inheritance and type hierarchies across any depth using DP traversal.
+    Traverses :RESOLVED_INHERITS and :INHERITS_FROM (superclasses and subclasses) and retrieves :HAS_METHOD links.
     """
-    db = _get_neo4j_session()
-    if not db:
-        return {"error": "Neo4j connection unavailable", "class_symbol": class_symbol}
+    target_sym = class_symbol or symbol_name
+    if not target_sym:
+        return {"error": "Missing required argument 'symbol_name' or 'class_symbol'"}
+
+    # Strip module prefixes if necessary
+    target_clean = target_sym.split(".")[-1]
 
     try:
-        with db.driver.session() as session:
-            # Superclasses (Parents)
-            parent_records = session.run("""
-                MATCH (cls:Class {name: $cls})-[:RESOLVED_INHERITS|INHERITS_FROM*1..3]->(super_cls:Class)
-                RETURN super_cls.name AS parent, super_cls.file_path AS file_path
-            """, cls=class_symbol)
-            parents = [{"name": r["parent"], "file": r["file_path"]} for r in parent_records]
+        with CallGraphTraversal() as engine:
+            parents = []
+            children = []
+            inheritance_paths = []
 
-            # Subclasses (Children)
-            child_records = session.run("""
-                MATCH (sub_cls:Class)-[:RESOLVED_INHERITS|INHERITS_FROM*1..3]->(cls:Class {name: $cls})
-                RETURN sub_cls.name AS child, sub_cls.file_path AS file_path
-            """, cls=class_symbol)
-            children = [{"name": r["child"], "file": r["file_path"]} for r in child_records]
+            # 1. Superclasses (Ancestors / Outgoing inheritance edges)
+            if direction in ("both", "superclasses", "parents", "outgoing", "ancestors"):
+                res_parents = engine.traverse_graph_dp(
+                    symbols=target_clean,
+                    direction="outgoing",
+                    edge_types=["RESOLVED_INHERITS", "INHERITS_FROM"],
+                    source_labels=["Class"],
+                    target_labels=["Class"],
+                    max_depth=max_depth,
+                    limit=limit,
+                )
+                seen_parents = set()
+                for n in res_parents.get("detailed_nodes", []):
+                    if n.get("name") != target_clean and n.get("distance", 0) > 0:
+                        p_key = (n.get("name"), n.get("file_path"))
+                        if p_key not in seen_parents:
+                            seen_parents.add(p_key)
+                            parents.append({
+                                "name": n.get("name"),
+                                "file": n.get("file_path"),
+                                "distance": n.get("distance", 1),
+                                "line": n.get("line"),
+                            })
+                inheritance_paths.extend(res_parents.get("paths", []))
 
-            # Methods
-            method_records = session.run("""
-                MATCH (cls:Class {name: $cls})-[:HAS_METHOD]->(fn:Function)
-                RETURN fn.name AS method, fn.line_start AS line
-            """, cls=class_symbol)
-            methods = [{"method": r["method"], "line": r["line"]} for r in method_records]
+            # 2. Subclasses (Descendants / Incoming inheritance edges)
+            if direction in ("both", "subclasses", "children", "incoming", "descendants"):
+                res_children = engine.traverse_graph_dp(
+                    symbols=target_clean,
+                    direction="incoming",
+                    edge_types=["RESOLVED_INHERITS", "INHERITS_FROM"],
+                    source_labels=["Class"],
+                    target_labels=["Class"],
+                    max_depth=max_depth,
+                    limit=limit,
+                )
+                seen_children = set()
+                for n in res_children.get("detailed_nodes", []):
+                    if n.get("name") != target_clean and n.get("distance", 0) > 0:
+                        c_key = (n.get("name"), n.get("file_path"))
+                        if c_key not in seen_children:
+                            seen_children.add(c_key)
+                            children.append({
+                                "name": n.get("name"),
+                                "file": n.get("file_path"),
+                                "distance": n.get("distance", 1),
+                                "line": n.get("line"),
+                            })
+                inheritance_paths.extend(res_children.get("paths", []))
+
+            # 3. Direct Methods (:HAS_METHOD)
+            methods = []
+            with engine.neo4j_db.driver.session() as session:
+                method_records = session.run("""
+                    MATCH (cls:Class)-[:HAS_METHOD]->(fn:Function)
+                    WHERE cls.name = $cls OR cls.name = $sym_clean 
+                       OR cls.id ENDS WITH ('.' + $sym_clean) 
+                       OR cls.id ENDS WITH ('::' + $sym_clean)
+                    RETURN fn.name AS method, fn.file_path AS file_path, coalesce(fn.start_line, fn.line, 0) AS line
+                    ORDER BY line ASC
+                """, cls=target_sym, sym_clean=target_clean)
+                for r in method_records:
+                    methods.append({
+                        "method": r["method"],
+                        "file": r["file_path"],
+                        "line": r["line"],
+                    })
+
+            # Deduplicate paths
+            dedup_paths = []
+            seen_chains = set()
+            for p in inheritance_paths:
+                chain = p.get("execution_chain")
+                if chain and chain not in seen_chains:
+                    seen_chains.add(chain)
+                    dedup_paths.append(p)
 
             return {
-                "class": class_symbol,
+                "class": target_sym,
+                "direction": direction,
+                "max_depth": max_depth,
                 "superclasses": parents,
                 "subclasses": children,
                 "methods": methods,
+                "inheritance_paths": dedup_paths[:limit],
+                "total_ancestors": len(parents),
+                "total_descendants": len(children),
+                "total_methods": len(methods),
+                "summary": f"Class '{target_sym}' has {len(parents)} superclass(es), {len(children)} subclass(es), and {len(methods)} direct method(s) resolved across full transitive inheritance depth.",
             }
     except Exception as e:
-        return {"error": str(e), "class_symbol": class_symbol}
-    finally:
-        db.close()
+        return {"error": str(e), "class_symbol": target_sym}
 
 
 @tool
@@ -253,15 +350,14 @@ def tool_get_symbol_code_snippet(
     max_lines: int = 80,
 ) -> Dict[str, Any]:
     """
-    [Tasks #8, #10, #15, #18] Fetches the exact code snippet for a function, class, or method.
+    [Tasks #8, #10, #15, #18] Fetches code snippet and metadata for a function, class, or method.
+    Checks Neo4j Knowledge Graph first for AST coordinates/metadata, then retrieves code chunk directly from Weaviate Vector DB.
     """
-    db = _get_neo4j_session()
-    line_start, line_end = None, None
-    resolved_file = file_path
-
-    # Clean symbol name (strip Class. prefix if present)
     sym_clean = symbol_name.split(".")[-1] if "." in symbol_name else symbol_name
+    node_metadata = None
 
+    # 1. FIRST: Check Neo4j Knowledge Graph for symbol definition & metadata
+    db = _get_neo4j_session()
     if db:
         try:
             with db.driver.session() as session:
@@ -273,133 +369,145 @@ def tool_get_symbol_code_snippet(
                            OR n.id ENDS WITH ('.' + $sym_clean) 
                            OR n.id ENDS WITH ('::' + $sym_clean)
                            OR n.name =~ ('(?i).*' + $sym_clean + '.*'))
-                    RETURN coalesce(n.file_path, split(n.id, '::')[0]) AS file_path, 
-                           coalesce(n.start_line, n.line_start, n.line) AS line_start, 
-                           coalesce(n.end_line, n.line_end) AS line_end
+                    RETURN n.id AS node_id,
+                           coalesce(n.name, $sym_clean) AS name,
+                           coalesce(n.file_path, split(n.id, '::')[0]) AS file_path, 
+                           labels(n)[0] AS type,
+                           n.signature AS signature,
+                           coalesce(n.start_line, n.line) AS line_start, 
+                           n.end_line AS line_end
                     LIMIT 1
                 """, sym=symbol_name, sym_clean=sym_clean)
                 r = records.single()
                 if r:
-                    resolved_file = r["file_path"]
-                    line_start = r["line_start"]
-                    line_end = r["line_end"]
+                    node_metadata = dict(r)
         except Exception as e:
-            print(f"[Warning] Neo4j snippet lookup: {e}")
+            print(f"[Warning] Neo4j snippet metadata lookup: {e}")
         finally:
             db.close()
 
-    # Read from disk if file is resolved
-    if resolved_file and os.path.exists(resolved_file):
-        try:
-            with open(resolved_file, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-            start = max(0, (line_start - 1) if line_start else 0)
-            end = min(len(lines), (line_end if line_end else start + max_lines))
-            snippet = "".join(lines[start:end])
-            return {
-                "symbol": symbol_name,
-                "file_path": resolved_file,
-                "line_start": start + 1,
-                "line_end": end,
-                "code": snippet,
-            }
-        except Exception as e:
-            return {"error": f"Failed to read file {resolved_file}: {e}"}
-
-    # Fallback to Weaviate vector chunk fetch
+    # 2. THEN: Fetch Code Chunk from Weaviate Vector DB
     wv = _get_weaviate_client()
     if wv:
         try:
-            results = wv.search_code(symbol_name, limit=1)
+            # Query Weaviate using node_id or exact symbol name
+            search_query = node_metadata["node_id"] if (node_metadata and node_metadata.get("node_id")) else symbol_name
+            results = wv.search_code(search_query, limit=3)
+            if not results and node_metadata and node_metadata.get("name"):
+                results = wv.search_code(node_metadata["name"], limit=3)
+            if not results:
+                results = wv.search_code(sym_clean, limit=3)
+
+            best_chunk = None
             if results:
+                for r in results:
+                    if r.get("name") in (symbol_name, sym_clean) or (node_metadata and r.get("node_id") == node_metadata.get("node_id")):
+                        best_chunk = r
+                        break
+                if not best_chunk:
+                    best_chunk = results[0]
+
+            if best_chunk and best_chunk.get("content"):
                 return {
                     "symbol": symbol_name,
-                    "file_path": results[0].get("file_path"),
-                    "code": results[0].get("content"),
-                    "docstring": results[0].get("docstring"),
+                    "file_path": best_chunk.get("file_path") or (node_metadata.get("file_path") if node_metadata else None),
+                    "line_start": node_metadata.get("line_start") if node_metadata else None,
+                    "line_end": node_metadata.get("line_end") if node_metadata else None,
+                    "signature": node_metadata.get("signature") if node_metadata else None,
+                    "type": node_metadata.get("type") if node_metadata else best_chunk.get("chunk_type"),
+                    "code": best_chunk.get("content"),
+                    "docstring": best_chunk.get("docstring") or (node_metadata.get("docstring") if node_metadata else None),
+                    "source": "neo4j_and_weaviate",
                 }
+        except Exception as e:
+            print(f"[Warning] Weaviate code lookup error: {e}")
         finally:
             wv.close()
 
-    return {"symbol": symbol_name, "error": "Symbol definition not found on disk or vector store."}
+    # 3. If chunk not in Weaviate, return Neo4j structured metadata definition
+    if node_metadata:
+        return {
+            "symbol": symbol_name,
+            "file_path": node_metadata.get("file_path"),
+            "line_start": node_metadata.get("line_start"),
+            "line_end": node_metadata.get("line_end"),
+            "signature": node_metadata.get("signature"),
+            "type": node_metadata.get("type"),
+            "docstring": node_metadata.get("docstring"),
+            "code": f"# Definition in Neo4j Graph:\n# Symbol: {node_metadata.get('name')}\n# Signature: {node_metadata.get('signature', 'N/A')}\n# File: {node_metadata.get('file_path')}\n# Lines: L{node_metadata.get('line_start')}-L{node_metadata.get('line_end')}",
+            "source": "neo4j_graph",
+        }
+
+    return {"symbol": symbol_name, "error": "Symbol definition not found in Neo4j Knowledge Graph or Weaviate Vector Store."}
 
 
 @tool
 def tool_analyze_architecture_coupling(
+    symbol_name: Optional[str] = None,
     source_module: Optional[str] = None,
-    detect_cycles: bool = True,
+    max_depth: int = 6,
+    limit: int = 50,
 ) -> Dict[str, Any]:
     """
-    [Task #12] Analyzes module coupling and detects circular import dependencies in Neo4j.
+    [Task #12] Analyzes module coupling and detects all forms of circular dependencies using Dynamic Programming (DP).
+    Detects:
+    1. File import cycles (File A <-> File B)
+    2. Function call cycles (Function A -> Function B -> Function A)
+    3. Class instantiation cycles (Class A -> Class B -> Class A)
+    4. Heterogeneous cross-type cycles (Function A -> Class B -> Class C -> Function A)
     """
-    db = _get_neo4j_session()
-    if not db:
-        return {"error": "Neo4j connection unavailable"}
+    target = source_module or symbol_name
 
     try:
-        with db.driver.session() as session:
-            # Direct Imports
-            imports_records = session.run("""
-                MATCH (f1:File)-[:IMPORTS]->(f2:File)
-                RETURN f1.path AS from_file, f2.path AS to_file
-                LIMIT 50
-            """)
-            imports_list = [{"from": r["from_file"], "to": r["to_file"]} for r in imports_records]
+        with CallGraphTraversal() as engine:
+            res = engine.detect_cycles_dp(
+                source_symbol=target,
+                max_depth=max_depth,
+                limit=limit,
+            )
 
-            # Circular Import Cycles
-            cycle_records = session.run("""
-                MATCH (f1:File)-[:IMPORTS]->(f2:File)-[:IMPORTS]->(f1:File)
-                WHERE f1.path < f2.path
-                RETURN f1.path AS file_a, f2.path AS file_b
-                LIMIT 20
-            """)
-            cycles = [{"cycle": f"{r['file_a']} <---> {r['file_b']}"} for r in cycle_records]
+            # Also sample direct file-to-file import edges for architecture metrics
+            with engine.neo4j_db.driver.session() as session:
+                imports_records = session.run("""
+                    MATCH (f1:File)-[:IMPORTS]->(f2:File)
+                    RETURN coalesce(f1.file_path, f1.name) AS from_file, coalesce(f2.file_path, f2.name) AS to_file
+                    LIMIT 50
+                """)
+                imports_list = [{"from": r["from_file"], "to": r["to_file"]} for r in imports_records]
 
-            return {
-                "total_import_edges": len(imports_list),
-                "circular_cycles_detected": len(cycles),
-                "circular_cycles": cycles,
-                "dependencies_sample": imports_list[:25],
-            }
+            res["total_import_edges"] = len(imports_list)
+            res["dependencies_sample"] = imports_list[:25]
+            res["circular_dependencies"] = [c["cycle_chain"] for c in res.get("all_cycles", [])]
+            return res
     except Exception as e:
-        return {"error": str(e)}
-    finally:
-        db.close()
+        return {"error": str(e), "source_symbol": target}
 
 
 @tool
 def tool_detect_orphan_and_dead_code(
+    entity_type: str = "all",
     scope_path: Optional[str] = None,
+    use_dp_reachability: bool = True,
     limit: int = 50,
 ) -> Dict[str, Any]:
     """
-    [Task #13] Detects dead, uncalled, or orphan functions with in_degree(RESOLVED_CALLS) == 0.
+    [Task #13] Detects dead code and unreferenced entities across the entire codebase using DP forward reachability and graph in-degree analysis.
+    Supports entity_type: 'all', 'functions', 'classes', 'files', 'env_vars', 'variables'.
     """
-    db = _get_neo4j_session()
-    if not db:
-        return {"error": "Neo4j connection unavailable"}
-
     try:
-        with db.driver.session() as session:
-            cypher = """
-            MATCH (fn:Function)
-            WHERE NOT ( ()-[:RESOLVED_CALLS|CALLS]->(fn) )
-              AND NOT fn.name STARTS WITH '__'
-              AND NOT fn.name STARTS WITH 'test_'
-              AND NOT fn.is_endpoint = true
-            RETURN fn.name AS name, fn.file_path AS file_path, fn.line_start AS line
-            LIMIT $limit
-            """
-            records = session.run(cypher, limit=limit)
-            orphans = [{"name": r["name"], "file_path": r["file_path"], "line": r["line"]} for r in records]
-            return {
-                "total_orphan_functions_found": len(orphans),
-                "orphans": orphans,
-            }
+        with CallGraphTraversal() as engine:
+            res = engine.detect_dead_entities_dp(
+                entity_type=entity_type,
+                scope_path=scope_path,
+                use_dp_reachability=use_dp_reachability,
+                limit=limit,
+            )
+            # Add backwards compatible aliases
+            res["orphans"] = res.get("dead_functions", [])
+            res["total_orphan_functions_found"] = len(res.get("dead_functions", []))
+            return res
     except Exception as e:
-        return {"error": str(e)}
-    finally:
-        db.close()
+        return {"error": str(e), "scope": scope_path}
 
 
 @tool
