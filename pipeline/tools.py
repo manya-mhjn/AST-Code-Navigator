@@ -24,7 +24,7 @@ load_dotenv(override=True)
 
 from langchain_core.tools import tool
 
-from pipeline.graph_traversal import CallGraphTraversal, traverse_call_graph
+from pipeline.tools_utils import CallGraphTraversal
 from pipeline.neo4j_sink import Neo4jCodeGraphIngestor
 from pipeline.weaviate_sink import WeaviateCloudCodeDB
 
@@ -74,14 +74,15 @@ def tool_traverse_call_graph(
     [Task #1, #2] Traverses the call graph in Neo4j up to max_depth hops.
     Use direction='incoming' for upstream callers and direction='outgoing' for downstream callees.
     """
-    return traverse_call_graph(
-        target_symbol=target_symbol,
-        direction=direction,
-        max_depth=max_depth,
-        file_path=file_path,
-        include_raw=include_raw,
-        limit=limit,
-    )
+    with CallGraphTraversal() as engine:
+        return engine.traverse(
+            target_symbol=target_symbol,
+            direction=direction,
+            max_depth=max_depth,
+            file_path=file_path,
+            include_raw=include_raw,
+            limit=limit,
+        )
 
 
 @tool
@@ -601,5 +602,5 @@ ALL_TOOLS = [
     tool_trace_taint_and_security_paths,
     tool_search_codebase_semantic,
     tool_query_test_traceability,
-    tool_query_api_endpoints,
+    tool_query_api_endpoints
 ]

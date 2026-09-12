@@ -147,16 +147,18 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
     print(f"\n================================================================================")
     print(f"  [Stage 1: Fast-Path Gate] Analyzing: \"{query}\" (Git: {git_hash})")
     print(f"================================================================================")
-
     def _extract_symbol(pattern: str) -> Optional[str]:
         m = re.search(pattern, query, re.IGNORECASE)
         if m:
-            sym = m.group(1).strip("() ,\"'")
-            return sym if sym else None
+            for g in m.groups():
+                if g is not None:
+                    sym = g.strip("() ,\"'")
+                    if sym:
+                        return sym
         return None
 
     # 1. Task #09: Environment Variables & Configuration Audit (Check First for Env Constants)
-    env_match = re.search(r"\b([A-Z0-9_]{3,}_(?:KEY|SECRET|TOKEN|URL|PORT|HOST|ENV|CONFIG|PWD|PASSWORD|FILE|DIR))", query)
+    env_match = re.search(r"\b([A-Z0-9_]{3,}_(?:KEY|SECRET|TOKEN|URL|PORT|HOST|ENV|CONFIG|PWD|PASSWORD|FILE|DIR))\b", query)
     if env_match or "environment variable" in q_lower or "os.getenv" in q_lower:
         target = env_match.group(1) if env_match else query.split()[-1].strip("?'\"")
         print(f"  [*] [Fast-Path #09: Env Vars & Secrets] Audit for '{target}'")
@@ -171,7 +173,7 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
         return {"fast_path_hit": True, "fast_path_result": ans}
 
     # 2. Task #01: Upstream Call Tracing (Caller Analysis)
-    sym = _extract_symbol(r"(?:who calls|callers? of|where is\s+([a-zA-Z0-9_\.]+)\s+called)")
+    sym = _extract_symbol(r"(?:who calls\s+([a-zA-Z0-9_\.]+)|callers?\s+of\s+([a-zA-Z0-9_\.]+)|where is\s+([a-zA-Z0-9_\.]+)\s+called)")
     if not sym and ("who calls" in q_lower or "callers of" in q_lower):
         sym = query.split()[-1].strip("()?'\"")
     if sym or "incoming call" in q_lower:
@@ -194,10 +196,14 @@ def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
         print(f"  [*] [Fast-Path #02: Downstream Callees] Traversal for '{target}'")
         res = tool_traverse_call_graph.invoke({"target_symbol": target, "direction": "outgoing", "max_depth": 1})
         paths = res.get("paths", [])
-        if paths:
-            ans = f"Outgoing Callees for **`{target}()`**:\n\n" + "\n".join(
-                [f"  - Invokes `{p.get('execution_chain')}` (Depth {p.get('depth')})" for p in paths]
-            )
+        raw_calls = res.get("raw_calls", [])
+        if paths or raw_calls:
+            lines = []
+            for p in paths:
+                lines.append(f"  - Resolved Call: `{p.get('execution_chain')}` (Depth {p.get('depth')})")
+            for c in raw_calls:
+                lines.append(f"  - Outgoing Call: `{c.get('target_name')}()` at line {c.get('line')}")
+            ans = f"Outgoing Callees initiated by **`{target}()`** ({len(paths) + len(raw_calls)} call site(s) found):\n\n" + "\n".join(lines)
         else:
             ans = f"No outgoing function calls found initiated by **`{target}()`** in the codebase graph."
         return {"fast_path_hit": True, "fast_path_result": ans}
