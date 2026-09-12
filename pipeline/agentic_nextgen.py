@@ -372,16 +372,54 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
     if negative_constraints:
         context_prompt += f"\nPruned Dead-End Paths (DO NOT RETRY THESE):\n" + "\n".join([f"- {c}" for c in negative_constraints])
 
+    json_prompt = (
+        f"{system_prompt}\n\n"
+        f"{context_prompt}\n\n"
+        "Decompose the query into 2-3 logical, hypothesis-driven steps (e.g., Step 1: Semantic search / Locate symbols, Step 2: Extract symbol code snippet / variable references / traverse call graph).\n"
+        "Return ONLY a JSON object matching this schema:\n"
+        "{\n"
+        '  "reasoning": "Architectural strategy breakdown",\n'
+        '  "steps": [\n'
+        '    {\n'
+        '      "step_id": 1,\n'
+        '      "tool_name": "tool_search_codebase_semantic",\n'
+        '      "tool_args": {"query": "exact search term"},\n'
+        '      "hypothesis": "Hypothesis for step 1",\n'
+        '      "acceptance_criteria": "Acceptance criteria for step 1"\n'
+        '    },\n'
+        '    {\n'
+        '      "step_id": 2,\n'
+        '      "tool_name": "tool_get_symbol_code_snippet",\n'
+        '      "tool_args": {"symbol_name": "target_symbol"},\n'
+        '      "hypothesis": "Hypothesis for step 2",\n'
+        '      "acceptance_criteria": "Acceptance criteria for step 2"\n'
+        '    }\n'
+        '  ]\n'
+        "}\n"
+    )
+
     llm = get_llm(temperature=0.0)
+    steps = []
     try:
-        structured_planner = llm.with_structured_output(HierarchicalPlanSchema)
-        plan_res: HierarchicalPlanSchema = structured_planner.invoke([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": context_prompt},
-        ])
-        steps = [s.model_dump() for s in plan_res.steps]
-    except Exception:
-        # Fallback Plan for small local models
+        raw_res = llm.invoke(json_prompt)
+        text = raw_res.content if hasattr(raw_res, "content") else str(raw_res)
+        json_match = re.search(r"(\{.*\})", text, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group(1))
+            raw_steps = data.get("steps", [])
+            for s in raw_steps:
+                steps.append({
+                    "step_id": s.get("step_id", len(steps) + 1),
+                    "tool_name": s.get("tool_name", "tool_search_codebase_semantic"),
+                    "tool_args": s.get("tool_args", {}),
+                    "hypothesis": s.get("hypothesis", ""),
+                    "acceptance_criteria": s.get("acceptance_criteria", ""),
+                    "status": "PENDING",
+                })
+        if not steps:
+            raise ValueError("No steps found in parsed JSON.")
+    except Exception as e:
+        print(f"   [!] Planner JSON fallback triggered ({e}). Using semantic search.")
         steps = [
             {
                 "step_id": 1,
@@ -479,13 +517,19 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
             fact_summary = f"References for '{tool_output.get('symbol', '')}': " + ", ".join(
                 [f"Accessed by {r.get('function_name')} in {r.get('file_path')}" for r in tool_output["references"]]
             )
+        elif "code" in tool_output and tool_output["code"]:
+            sym = tool_output.get("symbol", "")
+            fp = tool_output.get("file_path", "")
+            lines = f"L{tool_output.get('line_start', '')}-L{tool_output.get('line_end', '')}"
+            code_body = tool_output["code"].strip()
+            fact_summary = f"Symbol Code Definition for `{sym}` in `{fp}` ({lines}):\n```python\n{code_body[:2000]}\n```"
         elif "results" in tool_output and tool_output["results"]:
             snippets = []
             for r in tool_output["results"][:3]:
                 name = r.get("name") or "Code Chunk"
                 fp = r.get("file_path", "")
                 snip = (r.get("snippet") or "").strip()
-                snippets.append(f"  - Symbol: `{name}` in `{fp}`:\n    ```python\n    {snip[:250]}\n    ```")
+                snippets.append(f"  - Symbol: `{name}` in `{fp}`:\n    ```python\n    {snip[:1500]}\n    ```")
             fact_summary = f"Codebase Implementation Evidence ({len(tool_output['results'])} matches found):\n" + "\n".join(snippets)
         else:
             fact_summary = f"Verified: {current_step['hypothesis']} (Evidence: {str(tool_output)[:120]}...)"

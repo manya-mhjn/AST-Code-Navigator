@@ -566,15 +566,25 @@ def tool_get_symbol_code_snippet(
     line_start, line_end = None, None
     resolved_file = file_path
 
+    # Clean symbol name (strip Class. prefix if present)
+    sym_clean = symbol_name.split(".")[-1] if "." in symbol_name else symbol_name
+
     if db:
         try:
             with db.driver.session() as session:
                 records = session.run("""
                     MATCH (n)
-                    WHERE (n:Function OR n:Class) AND n.name = $sym
-                    RETURN n.file_path AS file_path, n.line_start AS line_start, n.line_end AS line_end
+                    WHERE (n:Function OR n:Class OR n:Variable) 
+                      AND (n.name = $sym 
+                           OR n.name = $sym_clean 
+                           OR n.id ENDS WITH ('.' + $sym_clean) 
+                           OR n.id ENDS WITH ('::' + $sym_clean)
+                           OR n.name =~ ('(?i).*' + $sym_clean + '.*'))
+                    RETURN coalesce(n.file_path, split(n.id, '::')[0]) AS file_path, 
+                           coalesce(n.start_line, n.line_start, n.line) AS line_start, 
+                           coalesce(n.end_line, n.line_end) AS line_end
                     LIMIT 1
-                """, sym=symbol_name)
+                """, sym=symbol_name, sym_clean=sym_clean)
                 r = records.single()
                 if r:
                     resolved_file = r["file_path"]
@@ -607,12 +617,12 @@ def tool_get_symbol_code_snippet(
     wv = _get_weaviate_client()
     if wv:
         try:
-            results = wv.hybrid_search(symbol_name, limit=1)
+            results = wv.search_code(symbol_name, limit=1)
             if results:
                 return {
                     "symbol": symbol_name,
                     "file_path": results[0].get("file_path"),
-                    "code": results[0].get("code"),
+                    "code": results[0].get("content"),
                     "docstring": results[0].get("docstring"),
                 }
         finally:
@@ -759,7 +769,7 @@ def tool_search_codebase_semantic(
                     "type": r.get("chunk_type"),
                     "file_path": r.get("file_path"),
                     "docstring": r.get("docstring"),
-                    "snippet": (r.get("content") or "")[:300] + "..." if r.get("content") and len(r.get("content")) > 300 else (r.get("content") or ""),
+                    "snippet": r.get("content") or "",
                 }
                 for r in results
             ],
