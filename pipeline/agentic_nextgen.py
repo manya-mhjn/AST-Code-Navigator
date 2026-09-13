@@ -2,12 +2,10 @@
 agentic_nextgen.py — Next-Gen Code Intelligence Agent Architecture.
 
 Implements:
-1. Stage 1: Heuristic Fast-Path Gate (All 11 Atomic Deterministic Tasks) & Episodic Memory Gate
-2. Stage 1b: Fast Synthesizer (<50ms, 0 tokens)
-3. Stage 2: Hierarchical Planner (Initial & Adaptive Re-Planning with Negative Constraints)
-4. Stage 3: Step Executor (Targeted Tool Dispatch)
-5. Stage 4: Evidence Evaluator & Tri-State Pruning Decision (Case A / B / C)
-6. Stage 5: Final Synthesizer & Episodic Memory Commit
+1. Stage 1: Hierarchical Planner (Direct Entry: Direct 1-Step or 2-Step Locate-Then-Inspect)
+2. Stage 2: Step Executor (Dynamic Tool Dispatch + $DISCOVERED_SYMBOL Resolution)
+3. Stage 3: LLM Evidence Evaluator (Strict Structured Output using EvidenceEvaluationSchema)
+4. Stage 4: Final Synthesizer & Episodic Memory Commit
 """
 
 from __future__ import annotations
@@ -66,16 +64,16 @@ class PlanStep(BaseModel):
     """Represents a single hypothesis-driven step in the hierarchical plan."""
     step_id: int = Field(..., description="1-indexed step number")
     tool_name: str = Field(..., description="Target tool name to invoke")
-    tool_args: Dict[str, Any] = Field(default_factory=dict, description="Arguments for tool invocation")
-    hypothesis: str = Field(..., description="Testable hypothesis (e.g. 'load_characters reads characters.json from disk')")
-    acceptance_criteria: str = Field(..., description="Clear conditions that must be met to consider evidence found")
+    tool_args: Dict[str, Any] = Field(default_factory=dict, description="Arguments (use '$DISCOVERED_SYMBOL' if relying on Step 1)")
+    hypothesis: str = Field(..., description="Testable hypothesis")
+    acceptance_criteria: str = Field(..., description="Conditions to verify evidence")
     status: PlanStepStatus = Field(default=PlanStepStatus.PENDING)
 
 
 class HierarchicalPlanSchema(BaseModel):
     """Structured output for the Hierarchical Planner."""
     reasoning: str = Field(..., description="Architectural strategy breakdown")
-    steps: List[PlanStep] = Field(..., description="Ordered list of hypothesis-driven plan steps (max 3-4 steps)")
+    steps: List[PlanStep] = Field(..., description="Ordered list of hypothesis-driven plan steps (1-3 steps)")
 
 
 class EvaluationVerdict(str, Enum):
@@ -84,13 +82,28 @@ class EvaluationVerdict(str, Enum):
     CASE_C_DEAD_END_PRUNE = "CASE_C_DEAD_END_PRUNE"
 
 
-class EvidenceEvaluationSchema(BaseModel):
-    """Structured evaluation of raw tool output against step acceptance criteria."""
-    verdict: EvaluationVerdict = Field(..., description="Evaluation outcome: CASE_A (Success), CASE_B (Retry), CASE_C (Prune)")
-    extracted_fact: Optional[str] = Field(None, description="Concise, verified fact extracted from evidence to write onto Blackboard")
-    fallback_tool_name: Optional[str] = Field(None, description="Sibling tool to retry if CASE_B")
-    fallback_tool_args: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Arguments for sibling tool")
-    dead_end_reason: Optional[str] = Field(None, description="Reason why path was pruned if CASE_C")
+class BatchEvaluationSchema(BaseModel):
+    """Structured consolidated post-plan evaluation of full execution trace."""
+    is_sufficient: bool = Field(
+        ...,
+        description="True if the cumulative execution trace provides concrete code evidence to answer the query, False otherwise."
+    )
+    failed_tools: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Explicit list of failed tools: [{'step_id': int, 'tool_name': str, 'hypothesis': str, 'failure_reason': str}]. Empty list [] if all tools succeeded."
+    )
+    extracted_facts: List[str] = Field(
+        default_factory=list,
+        description="List of concrete, verified factual statements quoting exact function names, formulas, file paths, and line numbers."
+    )
+    dead_end_reasons: List[str] = Field(
+        default_factory=list,
+        description="List of reasons explaining why specific hypotheses failed or found no relevant code."
+    )
+    replan_suggestion: Optional[str] = Field(
+        None,
+        description="Specific guidance for the planner if is_sufficient is False or some tools failed."
+    )
 
 
 # =============================================================================
@@ -98,35 +111,33 @@ class EvidenceEvaluationSchema(BaseModel):
 # =============================================================================
 
 class BlackboardState(TypedDict):
-    # Query & Codebase Context
     query: str
     git_hash: str
 
-    # Stage 1: Fast-Path / Memory Gate
-    fast_path_hit: bool
-    fast_path_result: Optional[str]
-
-    # Stage 2: Hierarchical Plan State
+    # Plan Tracking
     plan: List[Dict[str, Any]]
     current_step_index: int
-    replan_count: int                      # Max loop safeguard
+    replan_count: int
 
-    # Stage 3 & 4: Evidence & Blackboard Accumulation
+    # Dynamic Symbol Resolution
+    discovered_symbols: List[str]            # Real symbols discovered during semantic search
+
+    # Batch Execution Trace & Evidence Accumulation
+    execution_trace: List[Dict[str, Any]]     # All executed steps with hypotheses & raw outputs
     current_tool_output: Optional[Any]
-    blackboard_facts: List[Dict[str, Any]]  # Stores verified facts
-    negative_constraints: List[str]        # Pruned dead ends to avoid
-    consecutive_failures: int              # 0 -> Success, 1 -> Sibling Retry, >=2 -> Prune
+    blackboard_facts: List[Dict[str, Any]]
+    negative_constraints: List[str]
+    consecutive_failures: int
+    is_sufficient: Optional[bool]
 
-    # Stage 5: Final Output
+    # Final Output
     final_response: Optional[str]
 
 
-# Helper: Tool Dispatch Lookup Map
 TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 
 
 def _get_current_git_hash(repo_path: str = ".") -> str:
-    """Gets the current git commit hash or directory fingerprint."""
     try:
         res = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -141,232 +152,7 @@ def _get_current_git_hash(repo_path: str = ".") -> str:
 
 
 # =============================================================================
-# 3. Stage 1: Heuristic Fast-Path Gate (All 11 Deterministic 1-Shot Tasks)
-# =============================================================================
-
-def heuristic_and_memory_gate_node(state: BlackboardState) -> Dict[str, Any]:
-    query = state["query"].strip()
-    q_lower = query.lower()
-    git_hash = state.get("git_hash", "latest")
-
-    print(f"\n================================================================================")
-    print(f"  [Stage 1: Fast-Path Gate] Analyzing: \"{query}\" (Git: {git_hash})")
-    print(f"================================================================================")
-    def _extract_symbol(pattern: str) -> Optional[str]:
-        m = re.search(pattern, query, re.IGNORECASE)
-        if m:
-            for g in m.groups():
-                if g is not None:
-                    sym = g.strip("() ,\"'")
-                    if sym:
-                        return sym
-        return None
-
-    # Guard: Multi-symbol, Blast Radius, or Complex Impact Analysis -> Delegate to Hierarchical Planner
-    if any(k in q_lower for k in ["blast radius", "combined", "impact of", "what breaks", "what will break", "if i modify", "if we change"]) or (" and " in q_lower and ("modify" in q_lower or "change" in q_lower)):
-        print(f"  [-] [Fast-Path Bypass] Multi-symbol or impact query detected. Delegating to Stage 2: Hierarchical Planner.")
-        return {"fast_path_hit": False}
-
-    # 1. Task #09: Environment Variables & Configuration Audit (Check First for Env Constants)
-    env_match = re.search(r"\b([A-Z0-9_]{3,}_(?:KEY|SECRET|TOKEN|URL|PORT|HOST|ENV|CONFIG|PWD|PASSWORD|FILE|DIR))\b", query)
-    if env_match or "environment variable" in q_lower or "os.getenv" in q_lower:
-        target = env_match.group(1) if env_match else query.split()[-1].strip("?'\"")
-        print(f"  [*] [Fast-Path #09: Env Vars & Secrets] Audit for '{target}'")
-        res = tool_query_variable_and_state_references.invoke({"symbol_name": target, "variable_type": "env_var"})
-        refs = res.get("references", [])
-        if refs:
-            ans = f"Environment variable **`{target}`** is read at {len(refs)} location(s):\n\n" + "\n".join(
-                [f"  - `{r.get('function_name')}` in `{r.get('file_path')}`" for r in refs]
-            )
-        else:
-            ans = f"No references or reads of environment variable **`{target}`** were found in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # 2. Task #01: Upstream Call Tracing (Caller Analysis)
-    sym = _extract_symbol(r"(?:who calls\s+([a-zA-Z0-9_\.]+)|callers?\s+of\s+([a-zA-Z0-9_\.]+)|where is\s+([a-zA-Z0-9_\.]+)\s+called)")
-    if not sym and ("who calls" in q_lower or "callers of" in q_lower):
-        sym = query.split()[-1].strip("()?'\"")
-    if sym or "incoming call" in q_lower:
-        target = sym or query.split()[-1].strip("()?'\"")
-        print(f"  [*] [Fast-Path #01: Upstream Callers] Traversal for '{target}'")
-        res = tool_traverse_call_graph.invoke({"target_symbol": target, "direction": "incoming", "max_depth": 1})
-        raw_calls = res.get("raw_calls", [])
-        if raw_calls:
-            ans = f"Incoming Callers for **`{target}()`** ({len(raw_calls)} call site(s) found):\n\n" + "\n".join(
-                [f"  - `{c.get('caller_name')}()` in `{c.get('caller_id', '').split('::')[0]}` (Line {c.get('line')})" for c in raw_calls]
-            )
-        else:
-            ans = f"No incoming callers found invoking **`{target}()`** in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # 3. Task #02: Downstream Call Tracing (Callee / Dependency Analysis)
-    sym = _extract_symbol(r"(?:what does|callees? of|functions? does)\s+([a-zA-Z0-9_\.]+)\s+(?:call|invoke|execute)")
-    if sym or "outgoing call" in q_lower:
-        target = sym or query.split()[-1].strip("()?'\"")
-        print(f"  [*] [Fast-Path #02: Downstream Callees] Traversal for '{target}'")
-        res = tool_traverse_call_graph.invoke({"target_symbol": target, "direction": "outgoing", "max_depth": 1})
-        paths = res.get("paths", [])
-        raw_calls = res.get("raw_calls", [])
-        if paths or raw_calls:
-            lines = []
-            for p in paths:
-                lines.append(f"  - Resolved Call: `{p.get('execution_chain')}` (Depth {p.get('depth')})")
-            for c in raw_calls:
-                lines.append(f"  - Outgoing Call: `{c.get('target_name')}()` at line {c.get('line')}")
-            ans = f"Outgoing Callees initiated by **`{target}()`** ({len(paths) + len(raw_calls)} call site(s) found):\n\n" + "\n".join(lines)
-        else:
-            ans = f"No outgoing function calls found initiated by **`{target}()`** in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # 4. Task #05: Class Instance Attribute Mutability (self.)
-    sym = _extract_symbol(r"self\.([a-zA-Z0-9_]+)") or _extract_symbol(r"instance attribute\s+([a-zA-Z0-9_]+)")
-    if sym or "self." in query:
-        target = sym or query.split("self.")[-1].split()[0].strip("?'\"")
-        print(f"  [*] [Fast-Path #05: Instance Attribute Mutability] Audit for 'self.{target}'")
-        res = tool_query_variable_and_state_references.invoke({"symbol_name": target, "variable_type": "instance_attr"})
-        refs = res.get("references", [])
-        if refs:
-            ans = f"Instance attribute **`self.{target}`** is modified/referenced in {len(refs)} method(s):\n\n" + "\n".join(
-                [f"  - `{r.get('function_name')}` in `{r.get('file_path')}`" for r in refs]
-            )
-        else:
-            ans = f"No references or mutations of **`self.{target}`** were found in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # 5. Task #06: Inherited Class Attribute Resolution (super())
-    sym = _extract_symbol(r"(?:inherited from|parent class of|super\(\))\s+([a-zA-Z0-9_]+)")
-    if sym or "super()" in query or "inherited attribute" in q_lower:
-        target = sym or query.split()[-1].strip("?'\"")
-        print(f"  [*] [Fast-Path #06: Inherited Attributes] Hierarchy resolution for '{target}'")
-        res = tool_inspect_type_and_inheritance_hierarchy.invoke({"symbol_name": target})
-        ans = f"Inherited Class & Attribute Hierarchy for **`{target}`**:\n\n{json.dumps(res, indent=2)}"
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # 6. Task #07: Global & Module-Level Variable Audit
-    sym = _extract_symbol(r"(?:global variable|module(-|\s)level (?:variable|constant))\s+([a-zA-Z0-9_]+)")
-    if sym or "global variable" in q_lower or "module constant" in q_lower:
-        target = sym or query.split()[-1].strip("?'\"")
-        print(f"  [*] [Fast-Path #07: Global Variables] Audit for '{target}'")
-        res = tool_query_variable_and_state_references.invoke({"symbol_name": target, "variable_type": "global_variable"})
-        refs = res.get("references", [])
-        if refs:
-            ans = f"Global variable **`{target}`** is referenced at {len(refs)} location(s):\n\n" + "\n".join(
-                [f"  - `{r.get('function_name')}` in `{r.get('file_path')}`" for r in refs]
-            )
-        else:
-            ans = f"No references or declarations of global variable **`{target}`** found in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # 7. Task #08: Local Variable Initialization & Constant Default Audits (Snippets)
-    sym = _extract_symbol(r"(?:default (?:timeout|value|parameter)|initial value|code snippet) of\s+([a-zA-Z0-9_\.]+)")
-    if sym or "default timeout" in q_lower or "code snippet of" in q_lower:
-        target = sym or query.split()[-1].strip("?'\"")
-        print(f"  [*] [Fast-Path #08: Local Defaults / Snippet] Lookup for '{target}'")
-        res = tool_get_symbol_code_snippet.invoke({"symbol_name": target})
-        if res.get("snippet"):
-            ans = f"Code snippet for **`{target}`** in `{res.get('file_path')}`:\n\n```python\n{res.get('snippet')}\n```"
-        else:
-            ans = f"No code definition or snippet found for symbol **`{target}`** in the codebase."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # 8. Task #12: Module & Architecture Coupling
-    if any(k in q_lower for k in ["circular import", "circular dependencies", "module coupling", "architectural boundary"]):
-        print(f"  [*] [Fast-Path #12: Architecture Coupling] Analyzing circular imports & module edges...")
-        res = tool_analyze_architecture_coupling.invoke({})
-        cycles = res.get("circular_dependencies", [])
-        if cycles:
-            ans = f"Found {len(cycles)} circular module dependenc(ies):\n\n" + "\n".join([f"  - `{c}`" for c in cycles])
-        else:
-            ans = "No circular imports or high module coupling violations were detected in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # 9. Task #13: Dead Code & Orphan Identification
-    if any(k in q_lower for k in ["dead code", "orphan function", "unused function", "uncalled function", "orphan class", "dead class", "unused class", "unused variable", "dead variable", "unused file", "orphan file", "unused env"]):
-        print(f"  [*] [Fast-Path #13: Dead Code & Entity Audit] Querying unreachable and dead entities via DP...")
-        res = tool_detect_orphan_and_dead_code.invoke({"entity_type": "all", "use_dp_reachability": True})
-        
-        dead_fns = res.get("dead_functions", [])
-        dead_classes = res.get("dead_classes", [])
-        dead_files = res.get("dead_files", [])
-        dead_envs = res.get("dead_env_vars", [])
-        dead_vars = res.get("dead_variables", [])
-
-        sections = [f"### Codebase Dead Code & Unused Entity Audit ({res.get('total_dead_entities', 0)} total detected):\n"]
-        if dead_fns:
-            sections.append(f"**Dead / Unreachable Functions ({len(dead_fns)} found):**\n" + "\n".join([f"  - `{f.get('name')}()` in `{f.get('file_path')}` (Line {f.get('line')})" for f in dead_fns[:10]]))
-        if dead_classes:
-            sections.append(f"\n**Dead / Uninstantiated Classes ({len(dead_classes)} found):**\n" + "\n".join([f"  - `{c.get('name')}` in `{c.get('file_path')}`" for c in dead_classes[:5]]))
-        if dead_files:
-            sections.append(f"\n**Dead / Orphan Files ({len(dead_files)} found):**\n" + "\n".join([f"  - `{f.get('name')}` (`{f.get('file_path')}`)" for f in dead_files[:5]]))
-        if dead_envs:
-            sections.append(f"\n**Dead / Unreferenced Environment Variables ({len(dead_envs)} found):**\n" + "\n".join([f"  - `{e.get('name')}`" for e in dead_envs[:5]]))
-        if dead_vars:
-            sections.append(f"\n**Dead / Unused Module Variables ({len(dead_vars)} found):**\n" + "\n".join([f"  - `{v.get('name')}` in `{v.get('file_path')}`" for v in dead_vars[:5]]))
-
-        return {"fast_path_hit": True, "fast_path_result": "\n".join(sections)}
-
-    # 10. Task #17: Type & Class Hierarchy & Methods Inspection
-    sym = _extract_symbol(r"(?:classes inherit from|subclasses of|class hierarchy of|inheritance hierarchy of|class inheritance hierarchy and methods of|inheritance hierarchy and methods of|class hierarchy and methods of|methods of)\s+([a-zA-Z0-9_]+)")
-    if not sym:
-        sym = _extract_symbol(r"(?:inspect|check|find)\s+(?:the\s+)?(?:class\s+)?(?:inheritance\s+)?(?:hierarchy\s+)?(?:and\s+methods\s+)?(?:of\s+)?([A-Z][a-zA-Z0-9_]+)")
-    if sym or "class hierarchy" in q_lower or "inheritance hierarchy" in q_lower or "subclasses of" in q_lower:
-        target = sym or query.split()[-1].strip("?'\"")
-        print(f"  [*] [Fast-Path #17: Class Hierarchy & Methods] Inspecting hierarchy & methods for '{target}'")
-        res = tool_inspect_type_and_inheritance_hierarchy.invoke({"symbol_name": target})
-        superclasses = res.get("superclasses", [])
-        subclasses = res.get("subclasses", [])
-        methods = res.get("methods", [])
-        paths = res.get("inheritance_paths", [])
-
-        sections = [f"Class Hierarchy & Method Breakdown for **`{target}`**:\n"]
-        if superclasses:
-            sections.append(f"**Superclasses / Ancestors ({len(superclasses)} found):**\n" + "\n".join([f"  - `{s.get('name')}` (depth {s.get('distance', 1)}) in `{s.get('file') or 'External'}`" for s in superclasses]))
-        else:
-            sections.append("**Superclasses / Ancestors:** None (Root class)")
-
-        if subclasses:
-            sections.append(f"\n**Subclasses / Descendants ({len(subclasses)} found):**\n" + "\n".join([f"  - `{s.get('name')}` (depth {s.get('distance', 1)}) in `{s.get('file') or 'External'}`" for s in subclasses]))
-        else:
-            sections.append("\n**Subclasses / Descendants:** None")
-
-        if methods:
-            sections.append(f"\n**Direct Methods ({len(methods)} found):**\n" + "\n".join([f"  - `{m.get('method')}()` (Line {m.get('line')}) in `{m.get('file') or 'Unknown'}`" for m in methods]))
-        
-        if paths:
-            sections.append(f"\n**Inheritance Execution Chains:**\n" + "\n".join([f"  - `{p.get('execution_chain')}` (depth {p.get('depth')})" for p in paths[:5]]))
-
-        return {"fast_path_hit": True, "fast_path_result": "\n".join(sections)}
-
-    # 11. Task #20: API Contract & Interface Surface
-    if any(k in q_lower for k in ["rest endpoint", "api endpoint", "what routes", "http method", "api surface"]):
-        print(f"  [*] [Fast-Path #20: API Endpoints] Querying public HTTP routes & handlers...")
-        res = tool_query_api_endpoints.invoke({})
-        endpoints = res.get("endpoints", [])
-        if endpoints:
-            ans = f"Exposed REST API Endpoints ({len(endpoints)} found):\n\n" + "\n".join(
-                [f"  - `[{e.get('http_method', 'GET')}] {e.get('route')}` -> Handler: `{e.get('handler_name')}()` in `{e.get('file_path')}`" for e in endpoints]
-            )
-        else:
-            ans = "No explicit REST API endpoint decorators were detected in the codebase graph."
-        return {"fast_path_hit": True, "fast_path_result": ans}
-
-    # Fall-through to Stage 2: Hierarchical Planner
-    print("  [-] [Fast-Path Miss] Multi-step query detected. Delegating to Stage 2: Hierarchical Planner.")
-    return {"fast_path_hit": False, "fast_path_result": None}
-
-
-# =============================================================================
-# Stage 1b: Fast Synthesizer Node (<50ms, 0 LLM loops)
-# =============================================================================
-
-def fast_synthesizer_node(state: BlackboardState) -> Dict[str, Any]:
-    print(f"\n>> [Stage 1b: Fast Synthesizer] Returning verified fast-path answer.")
-    result = state.get("fast_path_result", "Lookup completed.")
-    return {"final_response": result}
-
-
-# =============================================================================
-# Stage 2: Hierarchical Planner Node (Initial & Adaptive Modes)
+# Stage 1: Hierarchical Planner Node (Direct Entry, Method 1 Aware)
 # =============================================================================
 
 def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
@@ -376,14 +162,14 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
     replan_count = state.get("replan_count", 0) + 1
     is_adaptive = len(negative_constraints) > 0 or len(facts) > 0
 
-    mode_label = "Adaptive Re-Planning (Dead-End Recovery)" if is_adaptive else "Initial Decomposition"
-    print(f"\n>> [Stage 2: Hierarchical Planner] Mode: {mode_label} (Replan Iteration: {replan_count}/2)")
-    if negative_constraints:
-        print(f"   [!] Negative Constraints Active: {negative_constraints}")
+    mode_label = "Adaptive Re-Planning" if is_adaptive else "Initial Decomposition"
+    print(f"\n================================================================================")
+    print(f"  [Stage 1: Hierarchical Planner] Mode: {mode_label} (Iteration: {replan_count}/2)")
+    print(f"  Query: \"{query}\"")
+    print(f"================================================================================")
 
-    # Maximum replan safeguard: if replan_count > 2, do not loop
     if replan_count > 2:
-        print("   [!] Max replan iterations reached. Proceeding directly to final synthesis.")
+        print("   [!] Max replan iterations reached. Proceeding to synthesis.")
         return {
             "plan": [],
             "current_step_index": 0,
@@ -393,51 +179,55 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
 
     system_prompt = (
         "You are CodeNavigator's Hierarchical Software Architecture Planner.\n"
-        "Your role is to decompose the developer's codebase query into a minimal, ordered sequence of 2-3 PlanSteps.\n"
-        "Each PlanStep MUST include:\n"
-        "1. target tool from the tool catalog\n"
-        "2. concrete testable hypothesis\n"
-        "3. explicit acceptance criteria that define success.\n\n"
-        "Available Tools:\n"
-        "- tool_traverse_call_graph(target_symbol, direction='incoming'|'outgoing')\n"
-        "- tool_calculate_blast_radius(target_symbol)\n"
-        "- tool_query_variable_and_state_references(symbol_name, variable_type)\n"
-        "- tool_get_symbol_code_snippet(symbol_name)\n"
-        "- tool_search_codebase_semantic(query)\n"
-        "- tool_inspect_type_and_inheritance_hierarchy(symbol_name)\n"
+        "Your role is to plan a minimal sequence of 1-3 PlanSteps to answer the user's codebase query.\n\n"
+        "PLANNING RULES:\n"
+        "1. Direct Symbol Queries (User gave exact identifier, e.g. 'Who calls load_characters?'):\n"
+        "   - Plan a SINGLE targeted step (e.g. tool_traverse_call_graph with target_symbol='load_characters').\n\n"
+        "2. Conceptual Queries (User did NOT give exact function/class name, e.g. 'How are characters loaded?', 'Where is tax calculated?'):\n"
+        "   - STEP 1 (Locate): Use 'tool_search_codebase_semantic' with natural language keywords to find the real code symbol.\n"
+        "   - STEP 2 (Inspect): Once Step 1 discovers the symbol ($DISCOVERED_SYMBOL), choose whichever tool from the full catalog best answers the user's specific question.\n"
+        "     The system will automatically inject the real function name discovered in Step 1 into Step 2.\n\n"
+        "AVAILABLE TOOLS (Full Catalog):\n"
+        "- tool_search_codebase_semantic(query: str)\n"
+        "- tool_get_symbol_code_snippet(symbol_name: str)\n"
+        "- tool_traverse_call_graph(target_symbol: str, direction: 'incoming'|'outgoing', max_depth: int)\n"
+        "- tool_calculate_blast_radius(target_symbol: str)\n"
+        "- tool_query_variable_and_state_references(symbol_name: str, variable_type: 'env_var'|'instance_attr'|'global_variable')\n"
+        "- tool_inspect_type_and_inheritance_hierarchy(symbol_name: str)\n"
         "- tool_query_api_endpoints()\n"
-        "- tool_query_test_traceability(target_symbol)\n"
-        "- tool_detect_orphan_and_dead_code()\n"
+        "- tool_detect_orphan_and_dead_code(entity_type: 'all'|'functions'|'classes'|'files')\n"
         "- tool_analyze_architecture_coupling()\n"
+        "- tool_query_test_traceability(target_symbol: str)\n"
+        "- tool_trace_parameter_lineage(target_symbol: str, parameter_name: str)\n"
+        "- tool_trace_taint_and_security_paths(source_symbol: str, sink_symbol: str)\n"
     )
 
     context_prompt = f"User Query: \"{query}\"\n"
     if facts:
-        context_prompt += f"\nEstablished Blackboard Facts:\n" + "\n".join([f"- {f['fact']}" for f in facts])
+        context_prompt += f"\nBlackboard Facts:\n" + "\n".join([f"- {f['fact']}" for f in facts])
     if negative_constraints:
-        context_prompt += f"\nPruned Dead-End Paths (DO NOT RETRY THESE):\n" + "\n".join([f"- {c}" for c in negative_constraints])
+        context_prompt += f"\nPruned Dead-End Paths:\n" + "\n".join([f"- {c}" for c in negative_constraints])
 
     json_prompt = (
         f"{system_prompt}\n\n"
         f"{context_prompt}\n\n"
-        "Decompose the query into 2-3 logical, hypothesis-driven steps (e.g., Step 1: Semantic search / Locate symbols, Step 2: Extract symbol code snippet / variable references / traverse call graph).\n"
-        "Return ONLY a JSON object matching this schema:\n"
+        "Generate the Plan. Return ONLY a JSON object matching this schema:\n"
         "{\n"
-        '  "reasoning": "Architectural strategy breakdown",\n'
+        '  "reasoning": "Strategy explanation",\n'
         '  "steps": [\n'
         '    {\n'
         '      "step_id": 1,\n'
         '      "tool_name": "tool_search_codebase_semantic",\n'
-        '      "tool_args": {"query": "exact search term"},\n'
-        '      "hypothesis": "Hypothesis for step 1",\n'
-        '      "acceptance_criteria": "Acceptance criteria for step 1"\n'
+        '      "tool_args": {"query": "natural language search keywords"},\n'
+        '      "hypothesis": "Locate the primary function handling this logic",\n'
+        '      "acceptance_criteria": "Vector DB returns relevant code chunk with symbol name"\n'
         '    },\n'
         '    {\n'
         '      "step_id": 2,\n'
         '      "tool_name": "tool_get_symbol_code_snippet",\n'
-        '      "tool_args": {"symbol_name": "target_symbol"},\n'
-        '      "hypothesis": "Hypothesis for step 2",\n'
-        '      "acceptance_criteria": "Acceptance criteria for step 2"\n'
+        '      "tool_args": {"symbol_name": "$DISCOVERED_SYMBOL"},\n'
+        '      "hypothesis": "Inspect the complete implementation of the discovered function",\n'
+        '      "acceptance_criteria": "Code snippet retrieved for discovered symbol"\n'
         '    }\n'
         '  ]\n'
         "}\n"
@@ -451,8 +241,7 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
         json_match = re.search(r"(\{.*\})", text, re.DOTALL)
         if json_match:
             data = json.loads(json_match.group(1))
-            raw_steps = data.get("steps", [])
-            for s in raw_steps:
+            for s in data.get("steps", []):
                 steps.append({
                     "step_id": s.get("step_id", len(steps) + 1),
                     "tool_name": s.get("tool_name", "tool_search_codebase_semantic"),
@@ -462,7 +251,7 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
                     "status": "PENDING",
                 })
         if not steps:
-            raise ValueError("No steps found in parsed JSON.")
+            raise ValueError("No steps in parsed JSON.")
     except Exception as e:
         print(f"   [!] Planner JSON fallback triggered ({e}). Using semantic search.")
         steps = [
@@ -470,8 +259,8 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
                 "step_id": 1,
                 "tool_name": "tool_search_codebase_semantic",
                 "tool_args": {"query": query},
-                "hypothesis": f"Semantic vector search will find relevant functions or files related to '{query}'",
-                "acceptance_criteria": "Vector DB returns >= 1 relevant code chunk",
+                "hypothesis": f"Search codebase for '{query}'",
+                "acceptance_criteria": "Vector DB returns >= 1 match",
                 "status": "PENDING",
             }
         ]
@@ -485,201 +274,233 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
         "current_step_index": 0,
         "replan_count": replan_count,
         "consecutive_failures": 0,
+        "execution_trace": [],
+        "is_sufficient": None,
     }
 
 
 # =============================================================================
-# Stage 3: Step Executor Node
+# Stage 2: Batch Step Executor Node (Zero LLM Calls, Resolves $DISCOVERED_SYMBOL)
 # =============================================================================
 
 def step_executor_node(state: BlackboardState) -> Dict[str, Any]:
-    plan = state.get("plan", [])
-    idx = state.get("current_step_index", 0)
-    if not plan or idx >= len(plan):
-        return {"current_tool_output": None}
+    plan = list(state.get("plan", []))
+    discovered_symbols = list(state.get("discovered_symbols", []))
+    execution_trace = list(state.get("execution_trace", []))
 
-    current_step = plan[idx]
-    tool_name = current_step["tool_name"]
-    tool_args = current_step.get("tool_args", {})
+    print(f"\n>> [Stage 2: Batch Step Executor] Executing {len(plan)} planned steps procedurally...")
 
-    print(f"\n>> [Stage 3: Step Executor] Running Step {current_step['step_id']}: {tool_name}")
-    print(f"   Hypothesis: {current_step['hypothesis']}")
-    print(f"   Args: {tool_args}")
+    for step in plan:
+        tool_name = step["tool_name"]
+        tool_args = dict(step.get("tool_args", {}))
 
-    tool_fn = TOOL_MAP.get(tool_name)
-    if not tool_fn:
-        output = {"error": f"Tool '{tool_name}' not found in registry."}
-    else:
-        try:
-            output = tool_fn.invoke(tool_args)
-        except Exception as e:
-            output = {"error": f"Tool execution failure: {str(e)}"}
+        # DYNAMIC SYMBOL RESOLUTION: Replace placeholder with real symbol discovered in earlier steps
+        if discovered_symbols:
+            latest_symbol = discovered_symbols[-1]
+            for k, v in tool_args.items():
+                if v == "$DISCOVERED_SYMBOL":
+                    print(f"   [*] [Procedural Symbol Resolved] Replaced '$DISCOVERED_SYMBOL' with '{latest_symbol}' for argument '{k}'")
+                    tool_args[k] = latest_symbol
 
-    return {"current_tool_output": output}
+        print(f"   -> Executing Step {step['step_id']}: {tool_name}")
+        print(f"      Hypothesis: {step['hypothesis']}")
+        print(f"      Args: {tool_args}")
+
+        tool_fn = TOOL_MAP.get(tool_name)
+        if not tool_fn:
+            output = {"error": f"Tool '{tool_name}' not found in registry."}
+        else:
+            try:
+                output = tool_fn.invoke(tool_args)
+            except Exception as e:
+                output = {"error": f"Tool execution failure: {str(e)}"}
+
+        # Procedural extraction: If tool returned search chunks, capture real symbol for subsequent steps
+        if isinstance(output, dict) and output.get("results"):
+            top_sym = None
+            for r in output["results"]:
+                fp = r.get("file_path", "")
+                if "test" not in fp.lower() and r.get("name"):
+                    top_sym = r.get("name")
+                    break
+            if not top_sym and output["results"]:
+                top_sym = output["results"][0].get("name")
+            if top_sym:
+                discovered_symbols.append(top_sym)
+                print(f"      [*] [Procedural Symbol Discovery] Captured symbol: '{top_sym}'")
+
+        step["status"] = "EXECUTED"
+        execution_trace.append({
+            "step_id": step["step_id"],
+            "tool_name": tool_name,
+            "tool_args": tool_args,
+            "hypothesis": step.get("hypothesis", ""),
+            "acceptance_criteria": step.get("acceptance_criteria", ""),
+            "output": output,
+        })
+
+    return {
+        "execution_trace": execution_trace,
+        "discovered_symbols": discovered_symbols,
+        "current_step_index": len(plan),
+        "plan": plan,
+    }
 
 
 # =============================================================================
-# Stage 4: Evidence Evaluator & Pruning Decision Node
+# Stage 3: Consolidated LLM Evidence Evaluator Node (Batch Review)
 # =============================================================================
 
 def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
+    query = state["query"]
     plan = state.get("plan", [])
-    idx = state.get("current_step_index", 0)
-    if not plan or idx >= len(plan):
-        return {"plan": plan, "current_step_index": idx}
-
-    current_step = plan[idx]
-    tool_output = state.get("current_tool_output")
-    failure_count = state.get("consecutive_failures", 0)
+    trace = state.get("execution_trace", [])
     facts = list(state.get("blackboard_facts", []))
     constraints = list(state.get("negative_constraints", []))
 
-    print(f"\n>> [Stage 4: Evidence Evaluator] Checking Step {current_step['step_id']} Acceptance Criteria...")
+    print(f"\n>> [Stage 3: LLM Evidence Evaluator] Reviewing batch execution trace ({len(trace)} steps) with LLM...")
 
-    # Heuristic evaluation of raw tool results
-    has_data = False
-    if isinstance(tool_output, dict):
-        if (
-            tool_output.get("paths")
-            or tool_output.get("raw_calls")
-            or tool_output.get("references")
-            or (isinstance(tool_output.get("results"), list) and len(tool_output["results"]) > 0)
-            or tool_output.get("snippet")
-            or tool_output.get("code")
-            or tool_output.get("total_affected_symbols", 0) > 0
-            or (isinstance(tool_output.get("detailed_nodes"), list) and len(tool_output["detailed_nodes"]) > 0)
-            or (isinstance(tool_output.get("superclasses"), list) and len(tool_output["superclasses"]) > 0)
-            or (isinstance(tool_output.get("subclasses"), list) and len(tool_output["subclasses"]) > 0)
-            or (isinstance(tool_output.get("methods"), list) and len(tool_output["methods"]) > 0)
-            or (isinstance(tool_output.get("inheritance_paths"), list) and len(tool_output["inheritance_paths"]) > 0)
-            or (isinstance(tool_output.get("endpoints"), list) and len(tool_output["endpoints"]) > 0)
-            or (isinstance(tool_output.get("orphans"), list) and len(tool_output["orphans"]) > 0)
-            or (isinstance(tool_output.get("circular_dependencies"), list) and len(tool_output["circular_dependencies"]) > 0)
-            or tool_output.get("total_ancestors", 0) > 0
-            or tool_output.get("total_descendants", 0) > 0
-            or tool_output.get("total_methods", 0) > 0
-        ):
-            has_data = True
-        elif tool_output.get("count", 0) > 0:
-            has_data = True
+    trace_summary = []
+    for t in trace:
+        out_str = json.dumps(t["output"], indent=2, default=str)
+        if len(out_str) > 2500:
+            out_str = out_str[:2500] + "\n... [Truncated for Evaluator] ..."
+        trace_summary.append(
+            f"### Step {t['step_id']}: Tool `{t['tool_name']}`\n"
+            f"- Hypothesis: {t.get('hypothesis', '')}\n"
+            f"- Acceptance Criteria: {t.get('acceptance_criteria', 'N/A')}\n"
+            f"- Arguments Invoked: {json.dumps(t.get('tool_args', {}))}\n"
+            f"- Tool Response / Output:\n```json\n{out_str}\n```"
+        )
 
-    # CASE A: Evidence Found (> 0 matches)
-    if has_data and "error" not in tool_output:
-        print(f"   [+] [CASE A: Evidence Verified] Step {current_step['step_id']} satisfied acceptance criteria.")
+    eval_prompt = (
+        "You are CodeNavigator's Scientific Evidence Evaluator.\n"
+        "Your task is to review the full execution trace of planned steps (each step's hypothesis, arguments, acceptance criteria, and raw tool response) and determine if the accumulated evidence is sufficient to answer the developer query.\n\n"
+        f"Developer Query: \"{query}\"\n\n"
+        "Execution Trace:\n"
+        + "\n\n".join(trace_summary) + "\n\n"
+        "EVALUATION RULES:\n"
+        "1. Check EACH step's tool response against its hypothesis and acceptance criteria:\n"
+        "   - If a tool returned empty results, null, an error, or missed the target symbol, report it in `failed_tools` with its `step_id`, `tool_name`, `hypothesis`, and `failure_reason`.\n"
+        "   - If all tools returned valid evidence, `failed_tools` MUST be an empty list [].\n"
+        "2. Overall Query Sufficiency:\n"
+        "   - If the accumulated valid evidence provides the code, formulas, callers, or architecture to answer the developer's query, set `is_sufficient`: true and extract concrete facts in `extracted_facts`.\n"
+        "   - If critical information is missing or the tools failed to answer the query, set `is_sufficient`: false, list `dead_end_reasons`, and provide a concrete `replan_suggestion`.\n\n"
+        "Return ONLY a JSON object matching this schema:\n"
+        "{\n"
+        '  "is_sufficient": true,\n'
+        '  "failed_tools": [\n'
+        '    {\n'
+        '      "step_id": 1,\n'
+        '      "tool_name": "tool_name_here",\n'
+        '      "hypothesis": "hypothesis text",\n'
+        '      "failure_reason": "why tool returned empty or failed"\n'
+        '    }\n'
+        '  ],\n'
+        '  "extracted_facts": ["Exact fact quoting symbol, file, lines, or formula"],\n'
+        '  "dead_end_reasons": [],\n'
+        '  "replan_suggestion": null\n'
+        "}\n"
+    )
 
-        if "superclasses" in tool_output or "subclasses" in tool_output or "methods" in tool_output:
-            cls_name = tool_output.get("class", current_step.get("tool_args", {}).get("symbol_name", "Target"))
-            parents_str = ", ".join([f"{p.get('name')} (depth {p.get('distance', 1)})" for p in tool_output.get("superclasses", [])]) or "None"
-            children_str = ", ".join([f"{c.get('name')} (depth {c.get('distance', 1)})" for c in tool_output.get("subclasses", [])]) or "None"
-            methods_str = ", ".join([f"{m.get('method')}() (L{m.get('line', '')})" for m in tool_output.get("methods", [])]) or "None"
-            paths_str = "\n".join([f"    - {p.get('execution_chain')}" for p in tool_output.get("inheritance_paths", [])[:5]])
-            fact_summary = (
-                f"Class Hierarchy & Method Breakdown for `{cls_name}`:\n"
-                f"  - Superclasses (Ancestors): {parents_str}\n"
-                f"  - Subclasses (Descendants): {children_str}\n"
-                f"  - Direct Methods: {methods_str}\n"
-                + (f"  - Inheritance Paths:\n{paths_str}" if paths_str else "")
-            )
-        elif "detailed_nodes" in tool_output and tool_output["detailed_nodes"]:
-            syms = tool_output.get("changed_symbols", [])
-            total = tool_output.get("total_affected_symbols", 0)
-            summary_dict = tool_output.get("affected_files_summary", {})
-            file_lines = [f"  - In `{f}`: " + ", ".join(items) for f, items in summary_dict.items()]
-            fact_summary = f"Blast Radius for {syms} ({total} affected symbol(s)):\n" + "\n".join(file_lines)
-        elif "raw_calls" in tool_output and tool_output["raw_calls"]:
-            fact_summary = f"Callers of '{current_step.get('tool_args', {}).get('target_symbol', '')}': " + ", ".join(
-                [f"{c.get('caller_name')}() in {c.get('caller_id', '').split('::')[0]}" for c in tool_output["raw_calls"]]
-            )
-        elif "references" in tool_output and tool_output["references"]:
-            fact_summary = f"References for '{tool_output.get('symbol', '')}': " + ", ".join(
-                [f"Accessed by {r.get('function_name')} in {r.get('file_path')}" for r in tool_output["references"]]
-            )
-        elif "code" in tool_output and tool_output["code"]:
-            sym = tool_output.get("symbol", "")
-            fp = tool_output.get("file_path", "")
-            lines = f"L{tool_output.get('line_start', '')}-L{tool_output.get('line_end', '')}"
-            code_body = tool_output["code"].strip()
-            fact_summary = f"Symbol Code Definition for `{sym}` in `{fp}` ({lines}):\n```python\n{code_body[:2000]}\n```"
-        elif "results" in tool_output and tool_output["results"]:
-            snippets = []
-            for r in tool_output["results"][:3]:
-                name = r.get("name") or "Code Chunk"
-                fp = r.get("file_path", "")
-                snip = (r.get("snippet") or "").strip()
-                snippets.append(f"  - Symbol: `{name}` in `{fp}`:\n    ```python\n    {snip[:1500]}\n    ```")
-            fact_summary = f"Codebase Implementation Evidence ({len(tool_output['results'])} matches found):\n" + "\n".join(snippets)
+    llm = get_llm(temperature=0.0)
+    evaluation: Optional[BatchEvaluationSchema] = None
+
+    try:
+        raw_eval = llm.invoke(eval_prompt)
+        txt = raw_eval.content if hasattr(raw_eval, "content") else str(raw_eval)
+        clean_txt = re.sub(r"^```(?:json)?\s*", "", txt.strip())
+        clean_txt = re.sub(r"\s*```$", "", clean_txt)
+        m = re.search(r"(\{.*\})", clean_txt, re.DOTALL)
+        if m:
+            evaluation = BatchEvaluationSchema.model_validate_json(m.group(1))
+    except Exception as e:
+        print(f"   [!] LLM Batch Evaluation error: {e}. Defaulting to heuristic inspection.")
+
+    if not evaluation:
+        failed_tools_list = []
+        for t in trace:
+            out = t.get("output")
+            is_err = isinstance(out, dict) and "error" in out
+            is_empty = not out or (isinstance(out, dict) and out.get("results") == [])
+            if is_err or is_empty:
+                failed_tools_list.append({
+                    "step_id": t["step_id"],
+                    "tool_name": t["tool_name"],
+                    "hypothesis": t.get("hypothesis", ""),
+                    "failure_reason": "Tool returned empty results or execution error.",
+                })
+        has_data = any(
+            t.get("output") and not (isinstance(t["output"], dict) and t["output"].get("error"))
+            for t in trace
+        )
+        evaluation = BatchEvaluationSchema(
+            is_sufficient=has_data,
+            failed_tools=failed_tools_list,
+            extracted_facts=[f"Codebase evidence gathered from: {t['tool_name']}" for t in trace if t.get("output")],
+            dead_end_reasons=["Evaluator fallback triggered."] if not has_data else [],
+        )
+
+    print(f"   [*] Evaluator Verdict: is_sufficient = {evaluation.is_sufficient}")
+
+    # Explicitly log and record failed tools
+    if evaluation.failed_tools:
+        print(f"   [!] [Failed Tools Identified: {len(evaluation.failed_tools)}]")
+        for ft in evaluation.failed_tools:
+            s_id = ft.get("step_id")
+            t_name = ft.get("tool_name", "Unknown")
+            reason = ft.get("failure_reason", "Tool failed to provide evidence.")
+            print(f"      [-] Step {s_id} ({t_name}) FAILED: {reason}")
+            constraints.append(f"Tool `{t_name}` (Step {s_id}) failed: {reason}")
+
+    # Mark per-step status based on failed_tools
+    failed_step_ids = {ft.get("step_id") for ft in evaluation.failed_tools if isinstance(ft, dict)}
+    for step in plan:
+        if step.get("step_id") in failed_step_ids:
+            step["status"] = PlanStepStatus.PRUNED
         else:
-            fact_summary = f"Verified: {current_step['hypothesis']} (Evidence: {str(tool_output)[:120]}...)"
+            step["status"] = PlanStepStatus.VERIFIED
 
-        facts.append({
-            "step_id": current_step["step_id"],
-            "hypothesis": current_step["hypothesis"],
-            "fact": fact_summary,
-        })
-        current_step["status"] = PlanStepStatus.VERIFIED
+    if evaluation.is_sufficient:
+        print(f"   [+] Evidence confirmed. Extracted {len(evaluation.extracted_facts)} verified facts.")
+        for fact_text in evaluation.extracted_facts:
+            facts.append({"fact": fact_text})
 
         return {
             "blackboard_facts": facts,
-            "consecutive_failures": 0,
-            "current_step_index": idx + 1,
-            "plan": plan,
-        }
-
-    # CASE B: Zero Evidence (First Failure, count == 0 -> Sibling Tool Retry)
-    elif failure_count == 0:
-        step_args = current_step.get("tool_args", {})
-        sym = (
-            step_args.get("target_symbol")
-            or step_args.get("symbol_name")
-            or (step_args.get("changed_symbols")[0] if isinstance(step_args.get("changed_symbols"), list) and step_args.get("changed_symbols") else None)
-            or (step_args.get("changed_symbols") if isinstance(step_args.get("changed_symbols"), str) else None)
-            or step_args.get("function_name")
-            or step_args.get("class_symbol")
-            or step_args.get("module_name")
-        )
-        if sym:
-            focused_query = f"{sym} definition implementation in codebase"
-        else:
-            focused_query = current_step.get("hypothesis", state["query"])
-
-        print(f"   [!] [CASE B: Zero Evidence - Retry 1] Initial tool yielded 0 results. Switching to focused semantic vector fallback: '{focused_query}'")
-        current_step["tool_name"] = "tool_search_codebase_semantic"
-        current_step["tool_args"] = {"query": focused_query}
-        return {
-            "consecutive_failures": 1,
-            "plan": plan,
-        }
-
-    # CASE C: Zero Evidence (Failure Count >= 1 -> DEAD END & PRUNING!)
-    else:
-        print(f"   [-] [CASE C: DEAD END HIT] Pruning branch for hypothesis: \"{current_step['hypothesis']}\"")
-        current_step["status"] = PlanStepStatus.PRUNED
-        dead_end_constraint = f"Hypothesis '{current_step['hypothesis']}' has no supporting evidence in the codebase graph or vector index."
-        constraints.append(dead_end_constraint)
-
-        # Advance step index past the pruned step so we don't get stuck on it!
-        return {
             "negative_constraints": constraints,
-            "consecutive_failures": 0,
-            "current_step_index": idx + 1,
+            "is_sufficient": True,
+            "plan": plan,
+        }
+    else:
+        print(f"   [-] Insufficient evidence or dead end hit.")
+        for reason in evaluation.dead_end_reasons:
+            print(f"      [-] Pruned: {reason}")
+            constraints.append(reason)
+        if evaluation.replan_suggestion:
+            constraints.append(f"Replan guidance: {evaluation.replan_suggestion}")
+
+        return {
+            "blackboard_facts": facts,
+            "negative_constraints": constraints,
+            "is_sufficient": False,
             "plan": plan,
         }
 
 
 # =============================================================================
-# Stage 5: Final Synthesis & Episodic Memory Commit Node
+# Stage 4: Final Synthesis & Episodic Memory Commit Node
 # =============================================================================
 
 def final_synthesis_and_memory_commit_node(state: BlackboardState) -> Dict[str, Any]:
     query = state["query"]
     facts = state.get("blackboard_facts", [])
     constraints = state.get("negative_constraints", [])
-    print(f"\n>> [Stage 5: Final Synthesizer & Memory Commit] Generating answer from Blackboard facts...")
+    print(f"\n>> [Stage 4: Final Synthesizer] Generating answer from Blackboard facts...")
 
     if not facts:
-        final_text = f"Based on knowledge graph traversals and semantic search, no occurrences or references were found for query: \"{query}\" in the ingested codebase."
+        final_text = f"No occurrences or references were found for query: \"{query}\" in the codebase."
     else:
-        # Deduplicate facts
         dedup_facts = []
         seen_fact_texts = set()
         for f in facts:
@@ -694,9 +515,9 @@ def final_synthesis_and_memory_commit_node(state: BlackboardState) -> Dict[str, 
                 "You are CodeNavigator, an expert AI software architect.\n"
                 "Synthesize a clear, accurate, developer-focused explanation answering the query below strictly using the verified Blackboard facts.\n"
                 "CRITICAL RULES:\n"
-                "- Base your explanation ONLY and EXCLUSIVELY on the verified code facts and snippets provided below.\n"
-                "- Quote exact function names, variable names, and formulas directly from the verified facts.\n"
-                "- Do NOT assume, speculate, or fabricate any rules, formulas, or parameters not present in the facts.\n\n"
+                "- Base your explanation ONLY on the verified code facts and snippets provided below.\n"
+                "- Quote exact function names, variable names, and line numbers directly from the verified facts.\n"
+                "- Do NOT speculate or fabricate any code not present in the facts.\n\n"
                 f"Developer Query: {query}\n\n"
                 "Verified Blackboard Facts:\n"
                 + "\n".join([f"- {f['fact']}" for f in dedup_facts])
@@ -712,71 +533,38 @@ def final_synthesis_and_memory_commit_node(state: BlackboardState) -> Dict[str, 
         constraint_lines = "\n".join([f"- {c}" for c in constraints])
         final_text += f"\n\n### Verified Negative Findings (Pruned Paths):\n{constraint_lines}"
 
-    print(f"   [*] [Episodic Memory] Committed trajectory to persistent vector memory (Git: {state.get('git_hash', 'HEAD')}).")
+    print(f"   [*] [Episodic Memory] Committed trajectory to memory (Git: {state.get('git_hash', 'HEAD')}).")
     return {"final_response": final_text}
 
 
 # =============================================================================
-# 4. Conditional Edge Routing Functions
+# Conditional Edge Routing
 # =============================================================================
 
-def route_after_gate(state: BlackboardState) -> Literal["fast_synthesizer", "hierarchical_planner"]:
-    if state.get("fast_path_hit"):
-        return "fast_synthesizer"
-    return "hierarchical_planner"
-
-
-def route_after_evaluator(state: BlackboardState) -> Literal["step_executor", "hierarchical_planner", "final_synthesis"]:
-    plan = state.get("plan", [])
-    idx = state.get("current_step_index", 0)
-    failures = state.get("consecutive_failures", 0)
+def route_after_evaluator(state: BlackboardState) -> Literal["hierarchical_planner", "final_synthesis"]:
+    is_sufficient = state.get("is_sufficient", True)
     replan_count = state.get("replan_count", 0)
 
-    # If Case B (retry fallback on same step)
-    if failures == 1:
-        return "step_executor"
-
-    # If more steps remain in current plan
-    if idx < len(plan):
-        return "step_executor"
-
-    # If all steps in current plan finished, but some were pruned and we have replan allowance
-    pruned_steps = [s for s in plan if s.get("status") == PlanStepStatus.PRUNED]
-    if pruned_steps and replan_count < 2:
+    if not is_sufficient and replan_count < 2:
+        print(f"\n>> [Routing] Insufficient evidence. Routing to Hierarchical Planner for replanning (Count: {replan_count + 1}/2)...")
         return "hierarchical_planner"
 
-    # All steps finished or replan exhausted -> Final Synthesis
     return "final_synthesis"
 
 
 # =============================================================================
-# 5. Build and Compile the Next-Gen LangGraph Agent
+# Graph Compilation
 # =============================================================================
 
 def build_nextgen_agentic_graph():
     workflow = StateGraph(BlackboardState)
 
-    # 1. Add All Nodes
-    workflow.add_node("heuristic_gate", heuristic_and_memory_gate_node)
-    workflow.add_node("fast_synthesizer", fast_synthesizer_node)
     workflow.add_node("hierarchical_planner", hierarchical_planner_node)
     workflow.add_node("step_executor", step_executor_node)
     workflow.add_node("evidence_evaluator", evidence_evaluator_node)
     workflow.add_node("final_synthesis", final_synthesis_and_memory_commit_node)
 
-    # 2. Add Edges & Conditional Routing
-    workflow.add_edge(START, "heuristic_gate")
-
-    workflow.add_conditional_edges(
-        "heuristic_gate",
-        route_after_gate,
-        {
-            "fast_synthesizer": "fast_synthesizer",
-            "hierarchical_planner": "hierarchical_planner",
-        },
-    )
-
-    workflow.add_edge("fast_synthesizer", END)
+    workflow.add_edge(START, "hierarchical_planner")
     workflow.add_edge("hierarchical_planner", "step_executor")
     workflow.add_edge("step_executor", "evidence_evaluator")
 
@@ -784,7 +572,6 @@ def build_nextgen_agentic_graph():
         "evidence_evaluator",
         route_after_evaluator,
         {
-            "step_executor": "step_executor",
             "hierarchical_planner": "hierarchical_planner",
             "final_synthesis": "final_synthesis",
         },
@@ -796,12 +583,10 @@ def build_nextgen_agentic_graph():
 
 
 # =============================================================================
-# 6. High-Level Runner Interface
+# High-Level Runner Interface & CLI
 # =============================================================================
 
 class NextGenCodeNavigatorAgent:
-    """High-level wrapper around the compiled Next-Gen LangGraph agent."""
-
     def __init__(self, repo_path: str = "."):
         self.app = build_nextgen_agentic_graph()
         self.repo_path = repo_path
@@ -810,15 +595,16 @@ class NextGenCodeNavigatorAgent:
         initial_state: BlackboardState = {
             "query": query,
             "git_hash": _get_current_git_hash(self.repo_path),
-            "fast_path_hit": False,
-            "fast_path_result": None,
             "plan": [],
             "current_step_index": 0,
             "replan_count": 0,
+            "discovered_symbols": [],
+            "execution_trace": [],
             "current_tool_output": None,
             "blackboard_facts": [],
             "negative_constraints": [],
             "consecutive_failures": 0,
+            "is_sufficient": None,
             "final_response": None,
         }
         final_state = self.app.invoke(initial_state)
@@ -830,7 +616,7 @@ if __name__ == "__main__":
     parser.add_argument("query", nargs="*", help="Natural language query about the codebase")
     args = parser.parse_args()
 
-    query_str = " ".join(args.query) if args.query else "Who calls load_characters()?"
+    query_str = " ".join(args.query) if args.query else "How are characters loaded into the game?"
     agent = NextGenCodeNavigatorAgent()
     ans = agent.ask(query_str)
 

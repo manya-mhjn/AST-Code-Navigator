@@ -224,20 +224,24 @@ def tool_trace_parameter_lineage(
                 caller_records = session.run("""
                     MATCH (caller:Function)-[r:RESOLVED_CALLS|CALLS]->(fn:Function)
                     WHERE (fn.name = $func OR fn.name = $func_clean OR fn.id ENDS WITH ('.' + $func_clean) OR fn.id ENDS WITH ('::' + $func_clean))
+                      AND ($param IS NULL OR r.arg_name = $param OR r.arguments CONTAINS $param OR r.arg_name IS NULL)
                     RETURN DISTINCT
                         elementId(caller) AS caller_id,
                         coalesce(caller.name, caller.id) AS caller_name,
                         caller.file_path AS file_path,
-                        coalesce(r.line, caller.start_line, 0) AS line
+                        coalesce(r.line, caller.start_line, 0) AS line,
+                        r.arg_name AS bound_arg,
+                        r.arg_value AS arg_value
                     ORDER BY line ASC
                     LIMIT $limit
-                """, func=function_name, func_clean=func_clean, limit=limit)
+                """, func=function_name, func_clean=func_clean, param=parameter_name, limit=limit)
                 for rec in caller_records:
                     direct_bindings.append({
                         "caller": rec["caller_name"],
                         "file": rec["file_path"],
                         "line": rec["line"],
-                        "bound_argument": f"parameter: {parameter_name} (inferred call site)",
+                        "bound_argument": rec["bound_arg"] or "positional/inferred",
+                        "argument_value": rec["arg_value"],
                     })
         except Exception as e:
             print(f"[Warning] Parameter lineage Cypher check: {e}")
@@ -464,18 +468,26 @@ def tool_get_symbol_code_snippet(
                 records = session.run("""
                     MATCH (n)
                     WHERE (n:Function OR n:Class OR n:Variable) 
-                      AND (n.name = $sym 
-                           OR n.name = $sym_clean 
-                           OR n.id ENDS WITH ('.' + $sym_clean) 
-                           OR n.id ENDS WITH ('::' + $sym_clean)
-                           OR n.name =~ ('(?i).*' + $sym_clean + '.*'))
+                    AND (n.name = $sym 
+                        OR n.name = $sym_clean 
+                        OR n.id ENDS WITH ('.' + $sym_clean) 
+                        OR n.id ENDS WITH ('::' + $sym_clean)
+                        OR n.name =~ ('(?i).*' + $sym_clean + '.*'))
+                    AND ($file_path IS NULL OR n.file_path = $file_path OR n.id STARTS WITH $file_path)
                     RETURN n.id AS node_id,
-                           coalesce(n.name, $sym_clean) AS name,
-                           coalesce(n.file_path, split(n.id, '::')[0]) AS file_path, 
-                           labels(n)[0] AS type,
-                           n.signature AS signature,
-                           coalesce(n.start_line, n.line) AS line_start, 
-                           n.end_line AS line_end
+                        coalesce(n.name, $sym_clean) AS name,
+                        coalesce(n.file_path, split(n.id, '::')[0]) AS file_path, 
+                        labels(n)[0] AS type,
+                        n.signature AS signature,
+                        coalesce(n.start_line, n.line) AS line_start, 
+                        n.end_line AS line_end
+                    ORDER BY 
+                        CASE 
+                            WHEN n.name = $sym THEN 1                        
+                            WHEN n.name = $sym_clean THEN 2                   
+                            WHEN n.id ENDS WITH ('::' + $sym_clean) THEN 3    
+                            ELSE 4                                           
+                        END ASC
                     LIMIT 1
                 """, sym=symbol_name, sym_clean=sym_clean)
                 r = records.single()
