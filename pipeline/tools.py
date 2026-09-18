@@ -233,8 +233,7 @@ def tool_trace_parameter_lineage(
                         r.arg_name AS bound_arg,
                         r.arg_value AS arg_value
                     ORDER BY line ASC
-                    LIMIT $limit
-                """, func=function_name, func_clean=func_clean, param=parameter_name, limit=limit)
+                """, func=function_name, func_clean=func_clean, param=parameter_name)
                 for rec in caller_records:
                     direct_bindings.append({
                         "caller": rec["caller_name"],
@@ -264,7 +263,7 @@ def tool_trace_parameter_lineage(
         "max_depth": max_depth,
         "direct_bound_callers": direct_bindings,
         "total_direct_callers": len(direct_bindings),
-        "execution_paths": res.get("paths", [])[:limit],
+        "execution_paths": res.get("paths", []),
         "lineage_summary": (
             f"Parameter '{parameter_name}' on function '{function_name}' has {len(direct_bindings)} direct caller binding(s) "
             f"and {len(res.get('paths', []))} multi-hop execution chain(s) up to depth {max_depth}."
@@ -294,8 +293,7 @@ def tool_query_variable_and_state_references(
                     MATCH (scope)-[:USES_ENV]->(env:EnvVar)
                     WHERE env.name = $sym OR env.name CONTAINS $sym
                     RETURN scope.name AS scope, scope.file_path AS file_path, env.name AS env_var, env.default_value AS default_value
-                    LIMIT $limit
-                """, sym=symbol_name, limit=limit)
+                """, sym=symbol_name)
                 env_usages = [{"scope": r["scope"], "file": r["file_path"], "env_var": r["env_var"], "default": r["default_value"]} for r in env_records]
                 if env_usages:
                     return {"type": "env_var", "symbol": symbol_name, "references": env_usages, "count": len(env_usages)}
@@ -307,8 +305,7 @@ def tool_query_variable_and_state_references(
                     MATCH (fn:Function)-[:RESOLVED_USES_INST_ATTR]->(attr)
                     WHERE attr.name = $sym OR attr.name ENDS WITH ('.' + $sym)
                     RETURN fn.name AS function_name, fn.file_path AS file_path, attr.name AS attribute
-                    LIMIT $limit
-                """, sym=clean_sym, limit=limit)
+                """, sym=clean_sym)
                 attr_usages = [{"function": r["function_name"], "file": r["file_path"], "attribute": r["attribute"]} for r in attr_records]
                 if attr_usages:
                     return {"type": "instance_attribute", "symbol": symbol_name, "references": attr_usages, "count": len(attr_usages)}
@@ -318,8 +315,7 @@ def tool_query_variable_and_state_references(
                 MATCH (fn:Function)-[:RESOLVED_USES_VARIABLE]->(var:Variable)
                 WHERE var.name = $sym
                 RETURN fn.name AS function_name, fn.file_path AS file_path, var.name AS variable
-                LIMIT $limit
-            """, sym=symbol_name, limit=limit)
+            """, sym=symbol_name)
             global_usages = [{"function": r["function_name"], "file": r["file_path"], "variable": r["variable"]} for r in global_records]
             return {"type": "global_variable", "symbol": symbol_name, "references": global_usages, "count": len(global_usages)}
     except Exception as e:
@@ -437,7 +433,7 @@ def tool_inspect_type_and_inheritance_hierarchy(
                 "superclasses": parents,
                 "subclasses": children,
                 "methods": methods,
-                "inheritance_paths": dedup_paths[:limit],
+                "inheritance_paths": dedup_paths,
                 "total_ancestors": len(parents),
                 "total_descendants": len(children),
                 "total_methods": len(methods),
@@ -451,7 +447,6 @@ def tool_inspect_type_and_inheritance_hierarchy(
 def tool_get_symbol_code_snippet(
     symbol_name: str,
     file_path: Optional[str] = None,
-    max_lines: int = 80,
 ) -> Dict[str, Any]:
     """
     [Tasks #8, #10, #15, #18] Fetches code snippet and metadata for a function, class, or method.
@@ -488,8 +483,7 @@ def tool_get_symbol_code_snippet(
                             WHEN n.id ENDS WITH ('::' + $sym_clean) THEN 3    
                             ELSE 4                                           
                         END ASC
-                    LIMIT 1
-                """, sym=symbol_name, sym_clean=sym_clean)
+                """, sym=symbol_name, sym_clean=sym_clean, file_path=file_path)
                 r = records.single()
                 if r:
                     node_metadata = dict(r)
@@ -583,12 +577,11 @@ def tool_analyze_architecture_coupling(
                 imports_records = session.run("""
                     MATCH (f1:File)-[:IMPORTS]->(f2:File)
                     RETURN coalesce(f1.file_path, f1.name) AS from_file, coalesce(f2.file_path, f2.name) AS to_file
-                    LIMIT 50
                 """)
                 imports_list = [{"from": r["from_file"], "to": r["to_file"]} for r in imports_records]
 
             res["total_import_edges"] = len(imports_list)
-            res["dependencies_sample"] = imports_list[:25]
+            res["dependencies_sample"] = imports_list
             res["circular_dependencies"] = [c["cycle_chain"] for c in res.get("all_cycles", [])]
             return res
     except Exception as e:
@@ -643,7 +636,6 @@ def tool_trace_taint_and_security_paths(
               AND (sink.name CONTAINS $sink_pat)
             MATCH path = shortestPath((src)-[:RESOLVED_CALLS*1..5]->(sink))
             RETURN [node in nodes(path) | node.name] AS call_path, length(path) AS depth
-            LIMIT 10
             """
             records = session.run(cypher, src_pat=source_pattern, sink_pat=sink_pattern)
             paths = [{"path": " -> ".join(r["call_path"]), "depth": r["depth"]} for r in records]
@@ -712,7 +704,6 @@ def tool_query_test_traceability(
             WHERE (target.name = $sym OR target.name ENDS WITH ('.' + $sym))
               AND (test.name STARTS WITH 'test_' OR test.file_path CONTAINS 'test')
             RETURN DISTINCT test.name AS test_name, test.file_path AS test_file
-            LIMIT 30
             """
             records = session.run(cypher, sym=target_symbol)
             tests = [{"test_function": r["test_name"], "file": r["test_file"]} for r in records]
@@ -745,7 +736,6 @@ def tool_query_api_endpoints(
             MATCH (fn:Function)
             WHERE fn.is_endpoint = true OR fn.route_path IS NOT NULL
             RETURN fn.name AS handler_name, fn.route_path AS route, fn.http_method AS method, fn.file_path AS file_path
-            LIMIT 50
             """
             records = session.run(cypher)
             endpoints = [

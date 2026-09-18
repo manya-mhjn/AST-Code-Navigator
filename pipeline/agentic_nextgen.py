@@ -179,14 +179,18 @@ def hierarchical_planner_node(state: BlackboardState) -> Dict[str, Any]:
 
     system_prompt = (
         "You are CodeNavigator's Hierarchical Software Architecture Planner.\n"
-        "Your role is to plan a minimal sequence of 1-3 PlanSteps to answer the user's codebase query.\n\n"
+        "Your role is to plan the exact sequence of PlanSteps needed to thoroughly answer the user's codebase query.\n\n"
         "PLANNING RULES:\n"
-        "1. Direct Symbol Queries (User gave exact identifier, e.g. 'Who calls load_characters?'):\n"
-        "   - Plan a SINGLE targeted step (e.g. tool_traverse_call_graph with target_symbol='load_characters').\n\n"
-        "2. Conceptual Queries (User did NOT give exact function/class name, e.g. 'How are characters loaded?', 'Where is tax calculated?'):\n"
-        "   - STEP 1 (Locate): Use 'tool_search_codebase_semantic' with natural language keywords to find the real code symbol.\n"
-        "   - STEP 2 (Inspect): Once Step 1 discovers the symbol ($DISCOVERED_SYMBOL), choose whichever tool from the full catalog best answers the user's specific question.\n"
-        "     The system will automatically inject the real function name discovered in Step 1 into Step 2.\n\n"
+        "CRITICAL INSTRUCTION (Applies to ALL plans):\n"
+        "In BOTH cases (whether entity name is given or not), you MUST plan the entire multi-step sequence upfront in this single plan. DO NOT wait for a symbol or previous step to be resolved before planning subsequent steps.\n\n"
+        "1. Entity Name Given (User provided exact or approximate function, class, variable, or file name, e.g. 'Who calls load_characters?', 'What is in weapon_dict?'):\n"
+        "   - Directly schedule the initial step using the provided entity name.\n"
+        "   - Plan all SUBSEQUENT STEPS (Step 2, Step 3, etc.) upfront in this same plan to completely answer the query using any required tools from the catalog (e.g. tool_get_symbol_code_snippet, tool_traverse_call_graph, tool_query_variable_and_state_references).\n\n"
+        "2. Entity Name NOT Given (User did NOT provide an exact function/class/variable name, e.g. 'How are characters loaded?', 'Where is tax calculated?'):\n"
+        "   - Search using 'tool_get_symbol_code_snippet' first if a candidate symbol can be inferred from the query context; if not getting the answer or no candidate exists, use 'tool_search_codebase_semantic' with natural language keywords.\n"
+        "   - Plan all SUBSEQUENT STEPS (Step 2, Step 3, etc.) upfront in this same plan using any required tools from the catalog to inspect, traverse, or analyze the code.\n"
+        "     For any argument that requires the discovered symbol name, pass the literal placeholder '$DISCOVERED_SYMBOL'.\n"
+        "     The execution engine will automatically and procedurally inject the real symbol discovered into all subsequent steps before running them.\n\n"
         "AVAILABLE TOOLS (Full Catalog):\n"
         "- tool_search_codebase_semantic(query: str)\n"
         "- tool_get_symbol_code_snippet(symbol_name: str)\n"
@@ -315,19 +319,25 @@ def step_executor_node(state: BlackboardState) -> Dict[str, Any]:
             except Exception as e:
                 output = {"error": f"Tool execution failure: {str(e)}"}
 
-        # Procedural extraction: If tool returned search chunks, capture real symbol for subsequent steps
-        if isinstance(output, dict) and output.get("results"):
-            top_sym = None
-            for r in output["results"]:
-                fp = r.get("file_path", "")
-                if "test" not in fp.lower() and r.get("name"):
-                    top_sym = r.get("name")
-                    break
-            if not top_sym and output["results"]:
-                top_sym = output["results"][0].get("name")
-            if top_sym:
-                discovered_symbols.append(top_sym)
-                print(f"      [*] [Procedural Symbol Discovery] Captured symbol: '{top_sym}'")
+        # Procedural extraction: capture real symbol for subsequent steps
+        if isinstance(output, dict):
+            if output.get("symbol") and "error" not in output:
+                sym = output["symbol"]
+                if sym not in discovered_symbols and sym != "$DISCOVERED_SYMBOL":
+                    discovered_symbols.append(sym)
+                    print(f"      [*] [Procedural Symbol Discovery] Captured symbol from snippet: '{sym}'")
+            elif output.get("results"):
+                top_sym = None
+                for r in output["results"]:
+                    fp = r.get("file_path", "")
+                    if "test" not in fp.lower() and r.get("name"):
+                        top_sym = r.get("name")
+                        break
+                if not top_sym and output["results"]:
+                    top_sym = output["results"][0].get("name")
+                if top_sym and top_sym not in discovered_symbols:
+                    discovered_symbols.append(top_sym)
+                    print(f"      [*] [Procedural Symbol Discovery] Captured symbol from search: '{top_sym}'")
 
         step["status"] = "EXECUTED"
         execution_trace.append({
@@ -363,8 +373,6 @@ def evidence_evaluator_node(state: BlackboardState) -> Dict[str, Any]:
     trace_summary = []
     for t in trace:
         out_str = json.dumps(t["output"], indent=2, default=str)
-        if len(out_str) > 2500:
-            out_str = out_str[:2500] + "\n... [Truncated for Evaluator] ..."
         trace_summary.append(
             f"### Step {t['step_id']}: Tool `{t['tool_name']}`\n"
             f"- Hypothesis: {t.get('hypothesis', '')}\n"
@@ -591,7 +599,8 @@ class NextGenCodeNavigatorAgent:
         self.app = build_nextgen_agentic_graph()
         self.repo_path = repo_path
 
-    def ask(self, query: str) -> str:
+    def ask_detailed(self, query: str) -> Dict[str, Any]:
+        """Runs the agent on the query and returns the complete final state dictionary and metadata."""
         initial_state: BlackboardState = {
             "query": query,
             "git_hash": _get_current_git_hash(self.repo_path),
@@ -607,7 +616,11 @@ class NextGenCodeNavigatorAgent:
             "is_sufficient": None,
             "final_response": None,
         }
-        final_state = self.app.invoke(initial_state)
+        return self.app.invoke(initial_state)
+
+    def ask(self, query: str) -> str:
+        """Runs the agent and returns the final synthesized response text."""
+        final_state = self.ask_detailed(query)
         return final_state.get("final_response", "Execution complete.")
 
 
@@ -625,3 +638,7 @@ if __name__ == "__main__":
     print("-" * 80)
     print(ans)
     print("=" * 80)
+
+#     i want my llm to give more human like response, write now it is giving direct ans not describing it enough, i want it go an extra mile, dont just give what is asked, I want it to give surrounding information too
+# modify the prompt of hirarchical planner to add an extra mile step where it will fetch additional relevant information from the dataset.
+# modify the propmt of synthesizer to give elaborate human like response. from all the facts presented to it

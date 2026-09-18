@@ -4,12 +4,14 @@ gemini_router.py — Quota-Aware Multi-Model Router for Google Gemini API.
 Manages dynamic routing, sliding-window rate limiting (RPM/TPM/RPD),
 and zero-error automated failover across:
   - LLM Text Models:
-      * gemini-3.6-flash  (5 RPM, 250K TPM, 20 RPD)
-      * gemini-3.7-flash  (5 RPM, 250K TPM, 20 RPD)
-      * gemini-3.8-flash  (5 RPM, 250K TPM, 20 RPD)
+      * gemini-3.6-flash       (5 RPM, 250K TPM, 20 RPD)
+      * gemini-3.7-flash       (5 RPM, 250K TPM, 20 RPD)
+      * gemini-3.8-flash       (5 RPM, 250K TPM, 20 RPD)
+      * gemini-3.5-flash-lite  (15 RPM, 250K TPM, 50 RPD)
+      * gemini-3.1-flash-lite  (15 RPM, 250K TPM, 50 RPD)
   - Embedding Models:
-      * gemini-embedding-001  (100 RPM, 30K TPM, 1,000 RPD)
-      * gemini-embedding-2    (100 RPM, 30K TPM, 1,000 RPD)
+      * gemini-embedding-001   (100 RPM, 30K TPM, 1,000 RPD)
+      * gemini-embedding-2     (100 RPM, 30K TPM, 1,000 RPD)
 """
 
 import functools
@@ -125,6 +127,8 @@ class GeminiLLMRouter:
         self.api_key = api_key
         self.client = genai.Client(api_key=api_key)
         self.trackers = {
+            'gemini-3.5-flash-lite': ModelQuotaTracker('gemini-3.5-flash-lite', rpm_limit=15, tpm_limit=250_000, rpd_limit=50),
+            'gemini-3.1-flash-lite': ModelQuotaTracker('gemini-3.1-flash-lite', rpm_limit=15, tpm_limit=250_000, rpd_limit=50),
             'gemini-3.6-flash': ModelQuotaTracker('gemini-3.6-flash', rpm_limit=5, tpm_limit=250_000, rpd_limit=20),
             'gemini-3.7-flash': ModelQuotaTracker('gemini-3.7-flash', rpm_limit=5, tpm_limit=250_000, rpd_limit=20),
             'gemini-3.8-flash': ModelQuotaTracker('gemini-3.8-flash', rpm_limit=5, tpm_limit=250_000, rpd_limit=20),
@@ -134,10 +138,11 @@ class GeminiLLMRouter:
     def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 2048) -> str:
         est_tokens = len(prompt) // 3 + 200
 
-        for attempt in range(len(self.trackers) * 3):
+        for attempt in range(len(self.trackers) * 2):
+            # Prioritize high-throughput Flash-Lite models first (15 RPM), then by available capacity
             candidates = sorted(
                 self.trackers.values(),
-                key=lambda t: t.available_capacity(est_tokens),
+                key=lambda t: (1 if "flash-lite" in t.model_id else 0, t.available_capacity(est_tokens)),
                 reverse=True
             )
             best_tracker = candidates[0]
@@ -145,7 +150,7 @@ class GeminiLLMRouter:
             if not best_tracker.can_accept(est_tokens):
                 min_wait = min(t.wait_time_needed() for t in self.trackers.values())
                 if min_wait > 0.1:
-                    print(f"  [~] [Gemini Router] All Flash models at Quota. Waiting {min_wait:.1f}s for RPM sliding window reset...")
+                    print(f"  [~] [Gemini Router] All Flash/Flash-Lite models at Quota. Waiting {min_wait:.1f}s for RPM sliding window reset...")
                     time.sleep(min_wait)
                     continue
 
@@ -170,10 +175,13 @@ class GeminiLLMRouter:
                 return response.text or ''
 
             except Exception as e:
-                print(f"  [!] [Gemini Router] Temporary issue on '{model_id}': {str(e)[:90]}... Failover to sibling model.")
-                best_tracker.mark_error_cooldown(seconds=6.0)
+                err_msg = str(e)
+                print(f"  [!] [Gemini Router] Temporary issue on '{model_id}': {err_msg[:90]}... Failover to sibling model.")
+                # If 429 quota exhausted, cool down for 60s so it doesn't get retried in the same minute loop
+                cooldown_secs = 60.0 if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) else 10.0
+                best_tracker.mark_error_cooldown(seconds=cooldown_secs)
 
-        raise RuntimeError('All Gemini Flash models failed or are currently unavailable.')
+        raise RuntimeError('All Gemini Flash / Flash-Lite models failed or are currently unavailable.')
 
 
 # =============================================================================

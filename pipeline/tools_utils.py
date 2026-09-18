@@ -158,13 +158,13 @@ class CallGraphTraversal:
                 entry = f"{node.get('type', 'Node')} {node.get('name', node_id)} (hop {node.get('distance', 1)})"
                 by_file.setdefault(f, []).append(entry)
 
-            result_data["paths"] = all_paths[:limit]
-            result_data["raw_calls"] = all_raw[:limit]
+            result_data["paths"] = all_paths
+            result_data["raw_calls"] = all_raw
             result_data["total_paths"] = len(result_data["paths"])
             result_data["total_affected_symbols"] = len(visited_nodes_map)
             result_data["total_affected_files"] = len(by_file)
             result_data["affected_files_summary"] = by_file
-            result_data["detailed_nodes"] = list(visited_nodes_map.values())[:limit]
+            result_data["detailed_nodes"] = list(visited_nodes_map.values())
             result_data["unique_nodes"] = list(visited_nodes_map.values())
 
         return result_data
@@ -423,7 +423,7 @@ class CallGraphTraversal:
             "function_call_cycles": fn_cycles,
             "class_instantiation_cycles": class_cycles,
             "heterogeneous_cycles": heterogeneous_cycles,
-            "all_cycles": all_cycles[:limit],
+            "all_cycles": all_cycles,
             "summary": f"Detected {len(all_cycles)} circular cycle(s) ({len(file_cycles)} file import, {len(fn_cycles)} function recursion, {len(class_cycles)} class instantiation, {len(heterogeneous_cycles)} heterogeneous cross-type loops) up to {max_depth} hops.",
         }
 
@@ -465,8 +465,6 @@ class CallGraphTraversal:
         else:
             label_filter = "n:Function OR n:Class OR n:File OR n:EnvVar OR n:Variable"
 
-        query_limit = max(limit * 5, 200)
-
         with self.neo4j_db.driver.session() as session:
             if use_dp_reachability:
                 # Single-pass Mark-and-Sweep Dead Code Query executed entirely in Neo4j
@@ -506,7 +504,6 @@ class CallGraphTraversal:
                         labels(n)[0] AS type,
                         coalesce(n.start_line, n.line, 0) AS line,
                         n.default_value AS default_value
-                    LIMIT $query_limit
                 """
             else:
                 # Direct in-degree orphan query (0 incoming dependency edges)
@@ -527,10 +524,9 @@ class CallGraphTraversal:
                         labels(n)[0] AS type,
                         coalesce(n.start_line, n.line, 0) AS line,
                         n.default_value AS default_value
-                    LIMIT $query_limit
                 """
 
-            records = session.run(cypher, scope=scope_path, query_limit=query_limit)
+            records = session.run(cypher, scope=scope_path)
 
             for r in records:
                 name = r["name"]
@@ -571,13 +567,6 @@ class CallGraphTraversal:
                         "line": line,
                         "reason": "Unreferenced module-level variable / constant",
                     })
-
-            # Trim to limit per category
-            results["dead_functions"] = results["dead_functions"][:limit]
-            results["dead_classes"] = results["dead_classes"][:limit]
-            results["dead_files"] = results["dead_files"][:limit]
-            results["dead_env_vars"] = results["dead_env_vars"][:limit]
-            results["dead_variables"] = results["dead_variables"][:limit]
 
         total_dead = (
             len(results["dead_functions"])
@@ -806,7 +795,9 @@ class CallGraphTraversal:
                     coalesce(neighbor.file_path, split(neighbor.id, '::')[0]) AS file_path,
                     labels(neighbor)[0] AS type,
                     type(r) AS edge_type,
-                    coalesce(neighbor.start_line, r.line, neighbor.line) AS line
+                    coalesce(r.line, neighbor.start_line, neighbor.line) AS line,
+                    r.line AS call_site_line,
+                    neighbor.start_line AS func_start_line
             """
         else:
             cypher = f"""
@@ -823,7 +814,9 @@ class CallGraphTraversal:
                     coalesce(neighbor.file_path, split(neighbor.id, '::')[0]) AS file_path,
                     labels(neighbor)[0] AS type,
                     type(r) AS edge_type,
-                    coalesce(neighbor.start_line, r.line, neighbor.line) AS line
+                    coalesce(r.line, neighbor.start_line, neighbor.line) AS line,
+                    r.line AS call_site_line,
+                    neighbor.start_line AS func_start_line
             """
 
         records = session.run(
@@ -875,7 +868,7 @@ class CallGraphTraversal:
                 coalesce(n.file_path, split(n.id, '::')[0]) AS file_path,
                 labels(n)[0] AS type,
                 coalesce(n.start_line, n.line) AS line
-            LIMIT 20
+            LIMIT 100
         """
         records = session.run(
             cypher,

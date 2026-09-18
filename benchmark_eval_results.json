@@ -1,0 +1,718 @@
+{
+  "timestamp": "2026-09-15T09:34:56.890697",
+  "total_evaluated": 51,
+  "total_target": 200,
+  "passed": 38,
+  "failed": 13,
+  "accuracy_percent": 74.5,
+  "average_latency_seconds": 9.61,
+  "results": [
+    {
+      "question_id": "Q01",
+      "question": "Who calls `load_characters()` in the codebase?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='load_characters', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `load_characters()` is called by the following functions and locations in the codebase:\n\n* `start_adventure` in `src/api_workflows/call_api.py` (line 49)\n* `start_adventure` in `src/game_workflows/core.py` (line 32)\n* `display_character_list` in `src/game_workflows/player.py` (line 193)",
+      "ground_truth_answer": "`load_characters()` (defined in `src/game_workflows/loaders.py:12-16`) is called by **3 distinct call sites**:\n1. `display_character_list()` in `src/game_workflows/player.py:193`\n2. `start_adventure()` in `src/game_workflows/core.py:32`\n3. `OllamaApi.start_adventure()` in `src/api_workflows/call_api.py:49`",
+      "verdict_reason": "The agent correctly identified all three call sites, including the specific file paths and line numbers, matching the Ground Truth Solution perfectly.",
+      "latency_seconds": 20.52
+    },
+    {
+      "question_id": "Q02",
+      "question": "What are all the call sites that invoke `save_characters()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='save_characters', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `save_characters()` is invoked at the following call sites:\n\n1. By the function `create_character_form` located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\player.py` at line 179.\n2. By the function `display_character_list` located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\player.py` at line 203.",
+      "ground_truth_answer": "`save_characters()` (defined in `src/game_workflows/loaders.py:19-21`) is called by two functions in `src/game_workflows/player.py`:\n1. `create_character_form()` at line 179 (when saving a newly created hero to `characters.json`)\n2. `display_character_list()` at line 203 (when deleting a character from the sidebar)",
+      "verdict_reason": "The agent correctly identified both call sites, the associated file path, and the line numbers as specified in the ground truth. While the agent included absolute local file paths, the core information regarding the function names and line numbers is accurate.",
+      "latency_seconds": 8.48
+    },
+    {
+      "question_id": "Q03",
+      "question": "Where is `save_adventure()` called across the entire repository?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='save_adventure', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `save_adventure()` is called within the `start_adventure` function in `src/game_workflows/core.py` at the following three distinct lines:\n- Line 75\n- Line 130\n- Line 141",
+      "ground_truth_answer": "`save_adventure()` (defined in `src/game_workflows/loaders.py:47-63`) is called exclusively in `src/game_workflows/core.py` at three distinct points:\n1. Line 75 in `start_adventure()`: saves the initial adventure session, `.pkl` history, and `history_ids.json`.\n2. Line 130 in `start_adventure()`: saves state after a player submits a character action in the chat form.\n3. Line 141 in `start_adventure()`: saves state after the Dungeon Master finishes generating the turn progression response.",
+      "verdict_reason": "The agent correctly identified the file path, the calling function, and all three specific line numbers where save_adventure() is invoked, matching the ground truth perfectly.",
+      "latency_seconds": 10.69
+    },
+    {
+      "question_id": "Q04",
+      "question": "What functions call `load_adventure()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='load_adventure', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `load_adventure()` is called by `initialize_adventure_state` located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py` at line 63.",
+      "ground_truth_answer": "`load_adventure()` (defined in `src/game_workflows/loaders.py:24-36`) is called exclusively by:\n1. `initialize_adventure_state(uuid)` in `src/game_workflows/game.py:63-64` to unpack `{uuid}.pkl` and `{uuid}_char.pkl` from disk.",
+      "verdict_reason": "The agent correctly identified the calling function and the file path. While the agent included a local absolute path prefix, the core identification of the function and the relative file path is accurate and matches the ground truth.",
+      "latency_seconds": 9.47
+    },
+    {
+      "question_id": "Q05",
+      "question": "Who calls `delete_history_file()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='delete_history_file', direction='incoming')`",
+      "agent_final_response": "The function `delete_history_file(uuid)` is called directly by `display_adventure_list` located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py` at line 57.",
+      "ground_truth_answer": "`delete_history_file()` (defined in `src/game_workflows/loaders.py:72-91`) is called by:\n1. `display_adventure_list()` in `src/game_workflows/game.py:57` when the player clicks the delete (trash) button next to a saved adventure.",
+      "verdict_reason": "The agent correctly identified the calling function (`display_adventure_list`) and the file path (`src/game_workflows/game.py` at line 57), which matches the ground truth solution.",
+      "latency_seconds": 9.51
+    },
+    {
+      "question_id": "Q06",
+      "question": "Which functions invoke `update_history_ids()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='update_history_ids', direction='incoming')`",
+      "agent_final_response": "Based on the verified code facts, the function `update_history_ids()` is invoked by the following function:\n\n*   `delete_history_file`: Located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\loaders.py` at line 88.",
+      "ground_truth_answer": "`update_history_ids()` (defined in `src/game_workflows/loaders.py:65-69`) is called by:\n1. `delete_history_file(uuid)` in `src/game_workflows/loaders.py:88` after unlinking pickle files from disk to rewrite `history_ids.json`.",
+      "verdict_reason": "The agent correctly identified the calling function `delete_history_file`, the correct file path (with an absolute path prefix included), and the exact line number matching the ground truth solution.",
+      "latency_seconds": 4.91
+    },
+    {
+      "question_id": "Q07",
+      "question": "Where in the codebase is `create_character_form()` called?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='create_character_form', direction='incoming')`",
+      "agent_final_response": "The function `create_character_form()` is called by the function `play_game` at line 35 in the file `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py`.",
+      "ground_truth_answer": "`create_character_form()` (defined in `src/game_workflows/player.py:14-189`) is called by:\n1. `play_game()` in `src/game_workflows/game.py:35` when `st.session_state.character_creation` is True.",
+      "verdict_reason": "The agent correctly identified the calling function (play_game), the file path, and the line number as specified in the ground truth. The inclusion of the local absolute path prefix does not invalidate the correctness of the file location.",
+      "latency_seconds": 8.9
+    },
+    {
+      "question_id": "Q08",
+      "question": "What functions call `start_adventure()` in `src/game_workflows/core.py`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='start_adventure', direction='incoming', file_path='src/game_workflows/core.py')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `start_adventure()` in `src/game_workflows/core.py` is called by the following functions located in `src/game_workflows/game.py`:\n\n* `display_adventure_list` (at line 54)\n* `play_game` (at line 38)",
+      "ground_truth_answer": "`start_adventure()` in `src/game_workflows/core.py` is called by two functions in `src/game_workflows/game.py`:\n1. `play_game()` at line 38 (when `st.session_state['game_state']['state']` is True after clicking 'Start Adventure')\n2. `display_adventure_list()` at line 54 (when the user clicks the continue adventure controller button '🎮')",
+      "verdict_reason": "The agent correctly identified both calling functions, their file path, and the corresponding line numbers as specified in the ground truth.",
+      "latency_seconds": 6.61
+    },
+    {
+      "question_id": "Q09",
+      "question": "Who calls `play_game()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='play_game', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `play_game()` is called by the `main()` function located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\main.py` at line 50.",
+      "ground_truth_answer": "`play_game()` (defined in `src/game_workflows/game.py:16-39`) is called by:\n1. `main()` in `main.py:50` when the user selects 'Play Game' on the sidebar radio navigation.",
+      "verdict_reason": "The agent correctly identified the calling function (main) and the file path (main.py) and line number (50) as specified in the ground truth. While the agent included a local absolute path prefix, the core identification of the caller and location is accurate.",
+      "latency_seconds": 8.94
+    },
+    {
+      "question_id": "Q10",
+      "question": "Which functions invoke `display_adventure_list()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='display_adventure_list', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `display_adventure_list()` (defined in `src/game_workflows/game.py` at line 41) is invoked by the following function:\n\n* The `main` function in `main.py` at line 53.",
+      "ground_truth_answer": "`display_adventure_list()` (defined in `src/game_workflows/game.py:41-60`) is called by:\n1. `main()` in `main.py:53` when the user navigates to the 'Play Game' section.",
+      "verdict_reason": "The agent correctly identified the calling function (main) and the file path (main.py) as specified in the ground truth. The line number provided matches the ground truth exactly.",
+      "latency_seconds": 8.17
+    },
+    {
+      "question_id": "Q11",
+      "question": "Where is `display_character_list()` called?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='display_character_list', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `display_character_list()` is called in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\main.py` within the `main` function at line 52.",
+      "ground_truth_answer": "`display_character_list()` (defined in `src/game_workflows/player.py:191-205`) is called by:\n1. `main()` in `main.py:52` in the 'Play Game' page branch to render created characters in the sidebar.",
+      "verdict_reason": "The agent correctly identified the calling function (main) and the file path (main.py) at the specified line number (52). While the agent included a local absolute path prefix, the core file identification and line number match the ground truth.",
+      "latency_seconds": 7.71
+    },
+    {
+      "question_id": "Q12",
+      "question": "Who calls `initialize_adventure_state()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='initialize_adventure_state', direction='incoming')`",
+      "agent_final_response": "The function `initialize_adventure_state(uuid)` is called by `display_adventure_list`, which is located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py` at line 53.",
+      "ground_truth_answer": "`initialize_adventure_state()` (defined in `src/game_workflows/game.py:62-68`) is called by:\n1. `display_adventure_list()` in `src/game_workflows/game.py:53` when the user clicks the continue button ('🎮') for a saved adventure.",
+      "verdict_reason": "The agent correctly identified the calling function and the file path. While the agent included a local absolute path prefix, the core file path and function identification match the ground truth.",
+      "latency_seconds": 8.77
+    },
+    {
+      "question_id": "Q13",
+      "question": "What functions trigger `reset_old_games()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='reset_old_games', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `reset_old_games()` (defined at line 70 in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py`) is triggered by the function **`play_game`**, which is located in the same file (`C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py`).",
+      "ground_truth_answer": "`reset_old_games()` (defined in `src/game_workflows/game.py:70-77`) is called by:\n1. `play_game()` in `src/game_workflows/game.py:30` when the user clicks the '🏞️ Start Adventure' button in the sidebar.",
+      "verdict_reason": "The agent correctly identified that the function `reset_old_games()` is triggered by the `play_game` function in the correct file (`src/game_workflows/game.py`), matching the ground truth solution.",
+      "latency_seconds": 8.29
+    },
+    {
+      "question_id": "Q14",
+      "question": "Who calls `check_ollama_availability()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='check_ollama_availability', direction='incoming')`",
+      "agent_final_response": "The function `check_ollama_availability()` is called by the following locations:\n\n*   `display_updated_status_sidebar` in `main.py` at line 29.\n*   `test_model_availability` in `src/utils.py` at line 22.",
+      "ground_truth_answer": "`check_ollama_availability()` (defined in `src/utils.py:12-18`) is called by:\n1. `display_updated_status_sidebar()` in `main.py:29` (to write 'Running' or 'Not Running' to the sidebar placeholder)\n2. `test_model_availability()` in `src/utils.py:22` (to verify connectivity before page load)",
+      "verdict_reason": "The agent correctly identified all the calling functions (`display_updated_status_sidebar` and `test_model_availability`), their corresponding files (`main.py` and `src/utils.py`), and the appropriate line numbers matching the ground truth solution.",
+      "latency_seconds": 7.9
+    },
+    {
+      "question_id": "Q15",
+      "question": "What are the incoming callers of `test_model_availability()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='test_model_availability', direction='incoming')`",
+      "agent_final_response": "Based on the verified facts, the function `test_model_availability()` (defined in `src/utils.py` at line 21) is called by the function `main()` located in `main.py` at line 44.",
+      "ground_truth_answer": "`test_model_availability()` (defined in `src/utils.py:21-28`) is called directly by:\n1. `main()` in `main.py:44` during application startup.",
+      "verdict_reason": "The agent accurately identified the incoming caller ('main()'), the caller's file path ('main.py'), the caller's line number (44), and the definition file of the target function ('src/utils.py' at line 21), perfectly matching the ground truth solution.",
+      "latency_seconds": 6.36
+    },
+    {
+      "question_id": "Q16",
+      "question": "Where is `manage_models()` invoked?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='manage_models', direction='incoming')`",
+      "agent_final_response": "The function `manage_models()` is invoked in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\main.py` within the `main()` function at line 56.",
+      "ground_truth_answer": "`manage_models()` (defined in `src/imports/model.py:33-70`) is invoked in:\n1. `main()` in `main.py:56` when the sidebar radio is set to 'Manage Models'.",
+      "verdict_reason": "The agent correctly identified the calling file (`main.py`), the calling function (`main()`), and the line number (56) where `manage_models()` is invoked, matching the ground truth. The absolute path included by the agent is a local artifact but does not detract from the core correctness.",
+      "latency_seconds": 9.32
+    },
+    {
+      "question_id": "Q17",
+      "question": "Who calls `set_fantasy_theme()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='set_fantasy_theme', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `set_fantasy_theme()` (defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\ui\\theme.py` at line 3) is called by the `main` function located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\main.py` at line 38.",
+      "ground_truth_answer": "`set_fantasy_theme()` (defined in `src/ui/theme.py:3-13`) is called by:\n1. `main()` in `main.py:38` at the beginning of the main application script.",
+      "verdict_reason": "The agent correctly identified the calling function (main) and the file location (main.py) as specified in the ground truth. While the agent included absolute local file paths, the core information regarding the function call site is accurate.",
+      "latency_seconds": 4.85
+    },
+    {
+      "question_id": "Q18",
+      "question": "Who calls `initialize_rag()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='initialize_rag', direction='incoming')`",
+      "agent_final_response": "Based on the verified Blackboard facts, `initialize_rag()` is called by the function `manage_models`. This call occurs at line 67 in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\imports\\model.py`.",
+      "ground_truth_answer": "`initialize_rag()` (defined in `src/imports/model.py:20-23`) is called by:\n1. `manage_models()` in `src/imports/model.py:67` when the user clicks 'Save Model Selections'.",
+      "verdict_reason": "The agent accurately identified that `initialize_rag()` is called by `manage_models` at line 67 in `src/imports/model.py`, perfectly matching the ground truth solution.",
+      "latency_seconds": 6.42
+    },
+    {
+      "question_id": "Q19",
+      "question": "What functions invoke `initialize_history()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='initialize_history', direction='incoming')`",
+      "agent_final_response": "The function `initialize_history()` (located at line 27 of `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\imports\\model.py`) is invoked by the function `manage_models`, which is located in the same file.",
+      "ground_truth_answer": "`initialize_history()` (defined in `src/imports/model.py:27-30`) is called by:\n1. `manage_models()` in `src/imports/model.py:68` when the user clicks 'Save Model Selections'.",
+      "verdict_reason": "The agent correctly identified that `initialize_history()` is invoked by `manage_models` within the correct file (`src/imports/model.py`), matching the ground truth solution.",
+      "latency_seconds": 4.6
+    },
+    {
+      "question_id": "Q20",
+      "question": "What is the full upstream call chain that leads to `load_characters()` starting from `main()`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='load_characters', direction='incoming', max_depth=3)`",
+      "agent_final_response": "Based on the verified Blackboard facts, here is the full upstream call chain that leads to `load_characters()` starting from `main()`:\n\n1. The execution begins at the entry point `main()` located in `main.py`.\n2. Inside `main()`, when `st.session_state.page == 'Play Game'`, the function `display_character_list()` is called. \n3. The function `display_character_list()` (defined in `src/game_workflows/player.py`) then calls `load_characters()`.\n\nThus, the full upstream call chain is: `main()` -> `display_character_list()` -> `load_characters()`.",
+      "ground_truth_answer": "The complete upstream call chain leading to `load_characters()` starting from `main()` follows two distinct routes:\n1. Route A (Via Adventure Log):\n   `main()` (`main.py:50`) -> `play_game()` (`game.py:38`) -> `start_adventure()` (`core.py:32`) -> `load_characters()` (`loaders.py:12`)\n2. Route B (Via Character Sidebar):\n   `main()` (`main.py:52`) -> `display_character_list()` (`player.py:193`) -> `load_characters()` (`loaders.py:12`)",
+      "verdict_reason": "The agent correctly identified Route B (via the character sidebar), but completely missed Route A (via the adventure log / play_game / start_adventure), which is also a valid upstream call chain leading to load_characters() according to the ground truth.",
+      "latency_seconds": 8.73
+    },
+    {
+      "question_id": "Q21",
+      "question": "What functions does `main()` in `main.py` call directly?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='main', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `main()` in `main.py` directly calls the following functions:\n\n- `set_fantasy_theme()`\n- `st.title()`\n- `display_updated_status_sidebar()`\n- `st.sidebar.divider()`\n- `test_model_availability()`\n- `st.sidebar.radio()`\n- `play_game()`\n- `display_character_list()`\n- `display_adventure_list()`\n- `manage_models()`\n- `st.sidebar.info()`",
+      "ground_truth_answer": "`main()` in `main.py` directly calls the following internal functions:\n1. `set_fantasy_theme()` (`src/ui/theme.py`)\n2. `display_updated_status_sidebar()` (`main.py`)\n3. `test_model_availability()` (`src/utils.py`)\n4. `play_game()` (`src/game_workflows/game.py`)\n5. `display_character_list()` (`src/game_workflows/player.py`)\n6. `display_adventure_list()` (`src/game_workflows/game.py`)\n7. `manage_models()` (`src/imports/model.py`)",
+      "verdict_reason": "The agent included several Streamlit library calls (e.g., st.title, st.sidebar.radio) as if they were internal functions called by main(). While the agent correctly identified all the internal functions listed in the Ground Truth, it failed to distinguish between internal application logic and external library UI calls, leading to a cluttered and inaccurate list of 'functions called'.",
+      "latency_seconds": 7.32
+    },
+    {
+      "question_id": "Q22",
+      "question": "What does `play_game()` in `src/game_workflows/game.py` invoke?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='play_game', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `play_game()` defined in `src/game_workflows/game.py` (between lines 16 and 38) invokes the following functions:\n\n- `initialize_session_state()`\n- `reset_old_games()`\n- `create_character_form()`\n- `start_adventure()`\n\nAdditionally, it makes several calls to the Streamlit library (`st`):\n- `st.warning()`\n- `st.sidebar.header()`\n- `st.sidebar.button()`",
+      "ground_truth_answer": "`play_game()` in `src/game_workflows/game.py` invokes:\n1. `initialize_session_state()` (`game.py:22`)\n2. `reset_old_games()` (`game.py:30`, on 'Start Adventure' button click)\n3. `create_character_form()` (`src/game_workflows/player.py:35`, when `character_creation` is True)\n4. `start_adventure()` (`src/game_workflows/core.py:38`, when `game_state['state']` is True)",
+      "verdict_reason": "The agent accurately identified all the main function invocations inside `play_game()` as specified in the ground truth solution, along with their correct file paths and corresponding Streamlit UI calls.",
+      "latency_seconds": 5.54
+    },
+    {
+      "question_id": "Q23",
+      "question": "What functions does `start_adventure()` in `src/game_workflows/core.py` call?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='start_adventure', direction='outgoing')`",
+      "agent_final_response": "The function `start_adventure()` in `src/game_workflows/core.py` initiates the following calls:\n\n*   `initialise_adventure_session_state` (line 27)\n*   `load_characters` (line 32)\n*   Various Streamlit functions, specifically `st.button`, `st.rerun`, and `st.info`.",
+      "ground_truth_answer": "`start_adventure()` in `src/game_workflows/core.py` directly calls:\n1. `initialise_adventure_session_state()` (`core.py:27`)\n2. `load_characters()` (`src/game_workflows/player.py:32`)\n3. `st.session_state['api'].start_adventure()` (`call_api.py:51`)\n4. `st.session_state['api'].name_adventure()` (`call_api.py:57`)\n5. `st.session_state['api'].save_doc_to_history_vector()` (`call_api.py:71, 132, 143`)\n6. `save_adventure()` (`src/game_workflows/loaders.py:75, 130, 141`)\n7. `st.session_state['api'].progress_story()` (`call_api.py:122`)\n8. `st.rerun()` (`core.py:77, 146`)",
+      "verdict_reason": "The agent correctly identified initialise_adventure_session_state and load_characters, but missed several core API and workflow calls (such as st.session_state['api'].start_adventure(), name_adventure(), save_doc_to_history_vector(), save_adventure(), and progress_story()) which are present in the ground truth solution.",
+      "latency_seconds": 5.21
+    },
+    {
+      "question_id": "Q24",
+      "question": "What outgoing calls are made by `create_character_form()`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='create_character_form', direction='outgoing')`",
+      "agent_final_response": "The function `create_character_form()` makes the following outgoing calls:\n\n**Internal Function Calls:**\n*   `initialize_session_state()`\n*   `calculate_points_spent(score)`\n*   `reset_character_form()`\n*   `save_characters(st.session_state.characters)` (triggered when the 'Save Character' button is clicked)\n\n**Streamlit Library Calls (`st.*`):**\n*   `st.header`\n*   `st.divider`\n*   `st.columns`\n*   `st.text_input`\n*   `st.selectbox`\n*   `st.subheader`\n*   `st.write`\n*   `st.number_input`\n*   `st.warning`\n*   `st.multiselect`\n*   `st.radio`\n*   `st.text_area`\n*   `st.button`\n*   `st.success`\n*   `st.rerun`\n\n**Built-in Python Functions:**\n*   `enumerate()`",
+      "ground_truth_answer": "`create_character_form()` in `src/game_workflows/player.py` invokes:\n1. `initialize_session_state()` (`player.py:43`, inner function)\n2. `calculate_points_spent()` (`player.py:32, 33, 86, 87`, inner function)\n3. `update_ability_score()` (`player.py:77`, inner callback passed to Streamlit widget)\n4. `save_characters()` (`src/game_workflows/loaders.py:179`)\n5. `reset_character_form()` (`player.py:181`, inner function)\n6. `st.rerun()` (`player.py:183`)",
+      "verdict_reason": "The agent failed to identify 'update_ability_score()' as an outgoing call, which is a critical functional component of the form. Additionally, the agent included a large list of Streamlit UI calls that were not requested and were not part of the Ground Truth, while omitting the specific context of the required function calls.",
+      "latency_seconds": 8.57
+    },
+    {
+      "question_id": "Q25",
+      "question": "What downstream functions are executed by `load_adventure()`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='load_adventure', direction='outgoing')`",
+      "agent_final_response": "As CodeNavigator, I have analyzed the verified Blackboard facts regarding the function `load_adventure()` defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\loaders.py`. \n\nThe downstream functions executed by `load_adventure()` are:\n- `os.path.join`\n- `os.path.exists`\n- `open`\n- `pickle.load`\n\nAdditionally, `load_adventure()` executes the raising of a `NameError` exception if the required files do not exist.",
+      "ground_truth_answer": "`load_adventure(uuid)` in `src/game_workflows/loaders.py` calls:\n1. `os.path.join()` (`loaders.py:25, 26, 27`)\n2. `os.path.exists()` (`loaders.py:29`)\n3. `pickle.load()` (`loaders.py:31, 33` to load `{uuid}.pkl` and `{uuid}_char.pkl`)",
+      "verdict_reason": "The agent correctly identified the primary downstream functions (os.path.join, os.path.exists, pickle.load). However, it hallucinated the 'open' function (which is implicitly handled by pickle.load in this context) and incorrectly stated that a 'NameError' is raised (the ground truth implies standard file handling, and NameError is typically not the exception raised for missing files).",
+      "latency_seconds": 7.36
+    },
+    {
+      "question_id": "Q26",
+      "question": "What functions are called inside `delete_history_file()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='delete_history_file', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `delete_history_file()` (defined from line 72 to 90 in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\loaders.py`) calls the following functions:\n\n- `os.path.join`\n- `st.session_state.history_store.get`\n- `st.session_state.history_store.delete`\n- `os.path.exists`\n- `os.remove`\n- `update_history_ids`",
+      "ground_truth_answer": "`delete_history_file(uuid)` in `src/game_workflows/loaders.py` invokes:\n1. `st.session_state.history_store.get(where={\"uuid\": uuid})` (`loaders.py:77`)\n2. `st.session_state.history_store.delete(history_ids)` (`loaders.py:81`)\n3. `os.path.join()` (`loaders.py:74, 75`)\n4. `os.path.exists()` (`loaders.py:84`)\n5. `os.remove()` (`loaders.py:85, 86` for `{uuid}.pkl` and `{uuid}_char.pkl`)\n6. `update_history_ids()` (`loaders.py:88`)",
+      "verdict_reason": "The agent accurately identified all the functions called inside `delete_history_file()` corresponding to the ground truth solution.",
+      "latency_seconds": 5.44
+    },
+    {
+      "question_id": "Q27",
+      "question": "What outgoing calls are initiated by `display_adventure_list()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='display_adventure_list', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `display_adventure_list()` (defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py` from lines 41 to 59) initiates the following outgoing calls:\n\n- `load_available_adventures()`\n- `initialize_adventure_state(uuid)`\n- `start_adventure()`\n- `delete_history_file(uuid=uuid)`\n- `st.sidebar.header(...)`\n- `st.session_state['adventure_dict'].items`\n- `st.sidebar.columns(...)`\n- `col1.write(...)`\n- `col2.button(...)`\n- `col3.button(...)`\n- `st.sidebar.success(...)`\n- `st.rerun()`",
+      "ground_truth_answer": "`display_adventure_list()` in `src/game_workflows/game.py` calls:\n1. `load_available_adventures()` (`loaders.py:43`)\n2. `initialize_adventure_state(uuid)` (`game.py:53`, when continue button '🎮' is clicked)\n3. `start_adventure()` (`core.py:54`, after initializing adventure state)\n4. `delete_history_file(uuid=uuid)` (`loaders.py:57`, when delete button '🗑️' is clicked)\n5. `st.rerun()` (`game.py:59`)",
+      "verdict_reason": "The agent successfully identified all five core outgoing calls specified in the ground truth (`load_available_adventures()`, `initialize_adventure_state(uuid)`, `start_adventure()`, `delete_history_file(uuid=uuid)`, and `st.rerun()`). While it also included internal Streamlit UI calls, the primary functional outgoing calls required by the query are completely accurate and present.",
+      "latency_seconds": 9.7
+    },
+    {
+      "question_id": "Q28",
+      "question": "What does `initialize_adventure_state()` invoke?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='initialize_adventure_state', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, `initialize_adventure_state(uuid)` invokes the following:\n\n1. `load_adventure(uuid=uuid)` to retrieve the chat history and characters in the adventure.\n2. `st.rerun()` after updating the Streamlit session state.",
+      "ground_truth_answer": "`initialize_adventure_state(uuid)` in `src/game_workflows/game.py` calls:\n1. `load_adventure(uuid=uuid)` (`src/game_workflows/loaders.py:63`)\n2. `st.rerun()` (`game.py:67`)",
+      "verdict_reason": "The agent accurately identified that `initialize_adventure_state(uuid)` invokes `load_adventure(uuid=uuid)` and `st.rerun()`, matching the core invocations specified in the ground truth solution.",
+      "latency_seconds": 7.08
+    },
+    {
+      "question_id": "Q29",
+      "question": "What functions does `manage_models()` call?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='manage_models', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `manage_models()` (defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\imports\\model.py` from lines 33 to 69) calls the following functions and instantiates the following classes:\n\n* **Local helper function:** `list_ollama_models()` (which it defines and calls)\n* **Internal functions:** `initialize_rag()` and `initialize_history()`\n* **Classes (instantiated):** `OllamaApi` and `HuggingFaceEmbeddings`\n* **Streamlit library functions:** `st.header()`, `st.warning()`, `st.subheader()`, `st.write()`, `st.selectbox()`, `st.button()`, and `st.success()`",
+      "ground_truth_answer": "`manage_models()` in `src/imports/model.py` calls:\n1. `list_ollama_models()` (`model.py:46`, inner function querying `/api/tags`)\n2. `OllamaApi(model=dm_model)` (`src/api_workflows/call_api.py:63`)\n3. `HuggingFaceEmbeddings(model_name=embedding_model)` (`langchain_huggingface:65`)\n4. `initialize_rag()` (`model.py:67`)\n5. `initialize_history()` (`model.py:68`)",
+      "verdict_reason": "Heuristic match: found 0/4 key entities from ground truth.",
+      "latency_seconds": 7.34
+    },
+    {
+      "question_id": "Q30",
+      "question": "What downstream functions does `test_model_availability()` call?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_search_codebase_semantic"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='test_model_availability', direction='outgoing')`",
+      "agent_final_response": "### Verified Codebase Findings for `What downstream functions does `test_model_availability()` call?`:\n\n- Codebase evidence gathered from: tool_search_codebase_semantic",
+      "ground_truth_answer": "`test_model_availability()` in `src/utils.py` calls:\n1. `check_ollama_availability()` (`utils.py:22`)\n2. `st.rerun()` (`utils.py:27`, when 'Retry Connection' button is clicked)",
+      "verdict_reason": "Heuristic match: found 0/2 key entities from ground truth.",
+      "latency_seconds": 13.78
+    },
+    {
+      "question_id": "Q31",
+      "question": "What calls are made inside `check_ollama_availability()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='check_ollama_availability', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the following calls are made inside `check_ollama_availability()` (defined on lines 12 to 18 of `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\utils.py`):\n\n1. A call to `OLLAMA_API_ENDPOINT.replace()` on line 14.\n2. A call to `requests.get()` on line 14 with a timeout of 5.",
+      "ground_truth_answer": "`check_ollama_availability()` in `src/utils.py` calls:\n1. `requests.get()` (`utils.py:14`) targeting `http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/version` with a `timeout=5`.",
+      "verdict_reason": "The agent correctly identified the primary call `requests.get()` inside `check_ollama_availability()` along with the timeout parameter, which matches the ground truth solution.",
+      "latency_seconds": 7.69
+    },
+    {
+      "question_id": "Q32",
+      "question": "What outgoing calls does `OllamaApi.start_adventure()` make?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='start_adventure', direction='outgoing')`",
+      "agent_final_response": "Based on the verified code facts, `OllamaApi.start_adventure()` (defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\api_workflows\\call_api.py` from lines 24 to 55) makes the following outgoing calls:\n\n1. `ChatPromptTemplate.from_template()` at line 45.\n2. `load_characters()` at line 49.\n3. `chain.stream()` at line 54.",
+      "ground_truth_answer": "`OllamaApi.start_adventure()` in `src/api_workflows/call_api.py` calls:\n1. `ChatPromptTemplate.from_template(template)` (`call_api.py:45`)\n2. `load_characters()` (`src/game_workflows/loaders.py:49`)\n3. `chain.stream(...)` (`call_api.py:54`) where `chain = prompt | self.llm`",
+      "verdict_reason": "The agent accurately identified all outgoing calls made by OllamaApi.start_adventure() as specified in the ground truth solution, including ChatPromptTemplate.from_template(), load_characters(), and chain.stream().",
+      "latency_seconds": 5.78
+    },
+    {
+      "question_id": "Q33",
+      "question": "What does `OllamaApi.progress_story()` call during its execution?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='progress_story', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, during the execution of `OllamaApi.progress_story()` (defined from line 74 to 161 in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\api_workflows\\call_api.py`), the following calls and setups are performed:\n\n1. **Inner Helper Functions:** It defines and utilizes inner helper functions:\n   - `get_history(chat, chat_history)`: Performs similarity searches on `st.session_state.history_store`, extracts AI and Human messages, and formats the chat history.\n   - `get_input()`: Concatenates character statements.\n\n2. **Prompt Templates & Retrieval Chains:** \n   - Creates chat prompt templates using `ChatPromptTemplate.from_messages` and `MessagesPlaceholder` for both contextualization and question-answering (`qa_prompt`).\n   - Sets up a history-aware retriever by calling `create_history_aware_retriever` with `self.llm`, `st.session_state.vector_store`, and `contextualize_q_prompt`.\n   - Creates a documents chain by calling `create_stuff_documents_chain` with `self.llm` and `qa_prompt`.\n   - Combines the retriever and chain into `rag_chain` by calling `create_retrieval_chain`.\n\n3. **Execution/Streaming:** \n   - Finally, it calls `rag_chain.stream({'input': input_text, 'chat_history': history_as_message})` to stream outputs and yield answers.",
+      "ground_truth_answer": "`OllamaApi.progress_story()` in `src/api_workflows/call_api.py` calls:\n1. `get_input()` (`call_api.py:156`, inner helper formatting player inputs)\n2. `get_history()` (`call_api.py:157`, inner helper performing vector retrieval)\n3. `st.session_state.embedding_model.embed_query()` (`call_api.py:82`)\n4. `st.session_state.history_store.similarity_search_by_vector_with_relevance_scores()` (`call_api.py:81`)\n5. `create_history_aware_retriever()` (`call_api.py:128`)\n6. `create_stuff_documents_chain()` (`call_api.py:150`)\n7. `create_retrieval_chain()` (`call_api.py:153`)\n8. `rag_chain.stream()` (`call_api.py:159`)",
+      "verdict_reason": "The agent correctly identified the core internal helper functions (`get_history`, `get_input`), LangChain setup calls (`create_history_aware_retriever`, `create_stuff_documents_chain`, `create_retrieval_chain`), and the final execution call (`rag_chain.stream()`) made during the execution of `OllamaApi.progress_story()`.",
+      "latency_seconds": 10.23
+    },
+    {
+      "question_id": "Q34",
+      "question": "What downstream functions are executed inside `dm_turn()` in `adventure.py`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='dm_turn', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the following downstream functions, methods, and API calls are executed inside `dm_turn()` (defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\adventure.py` from lines 17 to 21):\n\n1. **`vector_store.similarity_search(...)`**: Executed to retrieve relevant context lore based on story progression.\n2. **Python built-in/string methods (`\" \".join()` and `' '.join()`)**: Used for formatting strings and lists of documents.\n3. **`api_call(model, dm_prompt, 300)`**: Executed to generate the Dungeon Master's response.",
+      "ground_truth_answer": "`dm_turn()` in `src/game_workflows/adventure.py` calls:\n1. `vector_store.similarity_search()` (`adventure.py:18`)\n2. `api_call()` (`adventure.py:21`, note: `api_call` is an invalid import that does not exist in `call_api.py`)",
+      "verdict_reason": "The agent accurately identified both downstream functions executed inside dm_turn() (vector_store.similarity_search and api_call) as stated in the ground truth, along with accurate supporting details.",
+      "latency_seconds": 7.44
+    },
+    {
+      "question_id": "Q35",
+      "question": "What functions are called by `start_new_adventure()` in `adventure.py`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_search_codebase_semantic"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='start_new_adventure', direction='outgoing')`",
+      "agent_final_response": "### Verified Codebase Findings for `What functions are called by `start_new_adventure()` in `adventure.py`?`:\n\n- The function `start_new_adventure(model: str, party_members: Dict[str, str])` located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\adventure.py` calls the function `api_call(model, ..., 300)`.",
+      "ground_truth_answer": "`start_new_adventure()` in `src/game_workflows/adventure.py` calls:\n1. `api_call()` (`adventure.py:6`, note: `api_call` does not exist in `call_api.py`)",
+      "verdict_reason": "Heuristic match: found 1/3 key entities from ground truth.",
+      "latency_seconds": 11.58
+    },
+    {
+      "question_id": "Q36",
+      "question": "What outgoing functions does `save_adventure()` call?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_search_codebase_semantic"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='save_adventure', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `save_adventure(uuid: str, history: list, history_names: dict, characters: list = None)` calls the following outgoing standard library and built-in functions inside its implementation:\n\n- `os.path.join()`\n- `os.makedirs()`\n- `open()`\n- `pickle.dump()`\n- `json.dump()`",
+      "ground_truth_answer": "`save_adventure()` in `src/game_workflows/loaders.py` calls:\n1. `os.path.join()` (`loaders.py:48, 51, 55, 60`)\n2. `os.makedirs(req_path, exist_ok=True)` (`loaders.py:49`)\n3. `pickle.dump()` (`loaders.py:53, 62`)\n4. `json.dump()` (`loaders.py:57`)",
+      "verdict_reason": "The agent correctly identified all the outgoing functions called by save_adventure() (os.path.join, os.path.makedirs, pickle.dump, json.dump) along with the built-in open() function used during file writing, which aligns directly with the ground truth operations.",
+      "latency_seconds": 12.99
+    },
+    {
+      "question_id": "Q37",
+      "question": "What calls are made inside `display_updated_status_sidebar()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='display_updated_status_sidebar', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `display_updated_status_sidebar()` (defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\main.py` from lines 27 to 34) makes the following calls inside its body:\n\n1. `system_status.write(\"## System Status\")` at line 28\n2. `check_ollama_availability()` at line 29\n3. `ollama_placeholder.write(...)` at line 30\n4. `model_placeholder.write(...)` at line 31\n5. `rag_placeholder.write(...)` at line 33",
+      "ground_truth_answer": "`display_updated_status_sidebar()` in `main.py` calls:\n1. `check_ollama_availability()` (`src/utils.py:29`)\n2. `system_status.write()` (`main.py:28`)\n3. `ollama_placeholder.write()` (`main.py:30`)\n4. `model_placeholder.write()` (`main.py:31`)\n5. `rag_placeholder.write()` (`main.py:33`)",
+      "verdict_reason": "The agent accurately identified all the internal calls made inside `display_updated_status_sidebar()`, matching the ground truth solution precisely with the correct functions and their respective usages.",
+      "latency_seconds": 7.51
+    },
+    {
+      "question_id": "Q38",
+      "question": "What does `initialise_adventure_session_state()` call?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='initialise_adventure_session_state', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `initialise_adventure_session_state()` (defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\core.py` from lines 15 to 23) **does not call any other custom functions**. \n\nInstead, it only interacts with Streamlit's session state (`st.session_state`) to initialize keys such as:\n- `'has_adventure_started'`\n- `'chat_history'`\n- `'adventure_dict'`\n- `'characters_in_adventure'`",
+      "ground_truth_answer": "`initialise_adventure_session_state()` in `src/game_workflows/core.py` does not invoke external functions; it reads and sets Streamlit session state keys:\n- `st.session_state[\"has_adventure_started\"]` (line 17)\n- `st.session_state[\"chat_history\"]` (line 19)\n- `st.session_state['adventure_dict']` (line 21)\n- `st.session_state[\"characters_in_adventure\"]` (line 23)",
+      "verdict_reason": "The agent correctly identified that initialise_adventure_session_state() does not call other functions, and accurately listed the Streamlit session state keys it initializes, matching the ground truth solution.",
+      "latency_seconds": 7.72
+    },
+    {
+      "question_id": "Q39",
+      "question": "What functions does `reset_old_games()` invoke?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='reset_old_games', direction='outgoing')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the function `reset_old_games()` (defined from line 70 to line 76 in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py`) **does not invoke any custom functions**. \n\nInstead, it solely manages session state keys (`has_adventure_started`, `chat_history`, `characters_in_adventure`) within `st.session_state` by deleting them if they exist.",
+      "ground_truth_answer": "`reset_old_games()` in `src/game_workflows/game.py` does not call external functions; it purges state keys from `st.session_state`:\n- `del st.session_state[\"has_adventure_started\"]` (line 72)\n- `del st.session_state[\"chat_history\"]` (line 74)\n- `del st.session_state[\"characters_in_adventure\"]` (line 76)",
+      "verdict_reason": "The agent correctly identified that `reset_old_games()` does not invoke any functions, and accurately listed the session state keys it deletes (`has_adventure_started`, `chat_history`, `characters_in_adventure`), matching the ground truth solution.",
+      "latency_seconds": 5.2
+    },
+    {
+      "question_id": "Q40",
+      "question": "What LangChain library functions are called by `OllamaApi.__init__()`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_traverse_call_graph(target_symbol='__init__', direction='outgoing')`",
+      "agent_final_response": "### Verified Codebase Findings for `What LangChain library functions are called by `OllamaApi.__init__()`?`:\n\n- OllamaApi.__init__() in 'C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\api_workflows\\call_api.py' calls OllamaLLM (line 17) and RecursiveCharacterTextSplitter (line 18), both of which are commonly part of the LangChain ecosystem.",
+      "ground_truth_answer": "`OllamaApi.__init__()` in `src/api_workflows/call_api.py` instantiates:\n1. `OllamaLLM(model=model, temperature=temperature)` (`call_api.py:17`)\n2. `RecursiveCharacterTextSplitter(chunk_size=1100, chunk_overlap=100)` (`call_api.py:18`)",
+      "verdict_reason": "Heuristic match: found 0/2 key entities from ground truth.",
+      "latency_seconds": 9.49
+    },
+    {
+      "question_id": "Q41",
+      "question": "What will break if I modify `load_characters()` in `loaders.py`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_search_codebase_semantic"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='load_characters')`",
+      "agent_final_response": "### Verified Codebase Findings for `What will break if I modify `load_characters()` in `loaders.py`?`:\n\n- Codebase evidence gathered from: tool_search_codebase_semantic",
+      "ground_truth_answer": "Modifying `load_characters()` in `src/game_workflows/loaders.py` impacts 3 direct call sites:\n1. `display_character_list()` (`player.py:193`): breaks character listing and deletion in the sidebar.\n2. `start_adventure()` (`core.py:32`): breaks character selection validation and hero roster loading.\n3. `OllamaApi.start_adventure()` (`call_api.py:49`): breaks the Dungeon Master's ability to inject character sheets into the LLM system prompt.\nThis ripples up to `play_game()` and `main()` in `main.py`.",
+      "verdict_reason": "Heuristic match: found 0/4 key entities from ground truth.",
+      "latency_seconds": 11.36
+    },
+    {
+      "question_id": "Q42",
+      "question": "What is the blast radius of changing `save_characters()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_calculate_blast_radius",
+        "tool_traverse_call_graph",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='save_characters')`",
+      "agent_final_response": "Based on the verified Blackboard facts, changing `save_characters()` has a blast radius that includes 3 affected files and 6 affected symbols in total. \n\nHere are the specific details regarding its usage and impact:\n\n* **Definition:** The function `save_characters` is defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\loaders.py` at lines 19 to 21 with the signature `save_characters(characters)`.\n* **Behavior:** It writes character data to `CHARACTERS_FILE` using `json.dump`.\n* **Dependencies & Calls:** \n  * `player.py` imports `save_characters` from `src.game_workflows.loaders`.\n  * The function `create_character_form` in `player.py` (line 179) calls `save_characters`.\n  * The function `display_character_list` in `player.py` (line 203) calls `save_characters`.\n\n### Verified Negative Findings (Pruned Paths):\n- We found the definition of `save_characters()`, but we only performed a single semantic search and have not searched for callers or references across the entire codebase to accurately determine the full 'blast radius' (all files/functions that call `save_characters()` or depend on its output).\n- Replan guidance: Perform a codebase-wide reference search (e.g., text search or symbol usage search) for `save_characters` to identify all callers and dependent modules.",
+      "ground_truth_answer": "The blast radius of modifying `save_characters()` in `src/game_workflows/loaders.py` is confined to `src/game_workflows/player.py`:\n1. `create_character_form()` (line 179): saving newly created characters to `characters.json` fails.\n2. `display_character_list()` (line 203): updating `characters.json` when deleting a character from the sidebar fails.",
+      "verdict_reason": "The agent correctly identified the definition file (loaders.py), the affected file (player.py), and the specific calling functions (create_character_form and display_character_list at the correct line numbers) as specified in the ground truth solution.",
+      "latency_seconds": 15.56
+    },
+    {
+      "question_id": "Q43",
+      "question": "What is the ripple effect if I alter `save_adventure()` in `loaders.py`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_calculate_blast_radius",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='save_adventure')`",
+      "agent_final_response": "Based on the verified Blackboard facts, altering `save_adventure()` in `loaders.py` will have a direct impact on the following components:\n\n- **Definition and Implementation**: `save_adventure` is defined in `src/game_workflows/loaders.py` from line 47 to 62 with the signature `save_adventure(uuid: str, history: list, history_names: dict, characters: list = None) -> None`. \n- **Behavior**: Any changes to its internal logic will affect how it serializes the adventure history into a pickle file (`<uuid>.pkl`), writes `history_names` to a JSON file (`history_ids.json`), and optionally saves characters (`<uuid>_char.pkl`).\n- **Call Sites**: The function is imported and called within `src/game_workflows/core.py::start_adventure` at lines 75, 130, and 141. Consequently, any changes to its signature or return behavior will directly impact these execution points in `core.py`.",
+      "ground_truth_answer": "Altering `save_adventure()` in `src/game_workflows/loaders.py` directly impacts `src/game_workflows/core.py` at 3 invocation points:\n1. Initial adventure creation (line 75)\n2. Player turn submission (line 130)\n3. DM narrative response completion (line 141)\nFailure ripples downstream: `{uuid}.pkl`, `{uuid}_char.pkl`, and `history_ids.json` become corrupted or unwritten, causing `load_adventure()` and `display_adventure_list()` in `game.py` to fail when resuming saved campaigns.",
+      "verdict_reason": "The agent accurately identified the file paths (`src/game_workflows/loaders.py`, `src/game_workflows/core.py`), the specific invocation line numbers (75, 130, 141), the calling file context, and the serialization targets (pickle files, JSON history IDs) affected by altering `save_adventure()`, aligning closely with the ground truth solution.",
+      "latency_seconds": 9.07
+    },
+    {
+      "question_id": "Q44",
+      "question": "What breaks if I change the signature of `load_adventure()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_calculate_blast_radius",
+        "tool_traverse_call_graph",
+        "tool_query_test_traceability"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='load_adventure')`",
+      "agent_final_response": "Based on the verified Blackboard facts, changing the signature of `load_adventure()` will impact the codebase in the following ways:\n\n* **Definition and Location:** The function `load_adventure` is defined in `src/game_workflows/loaders.py` at line 24.\n* **Direct Dependents & Imports:** The file `src/game_workflows/game.py` imports `load_adventure` from `src.game_workflows.loaders`. \n* **Function Calls:** Within `src/game_workflows/game.py`, the function `initialize_adventure_state` calls `load_adventure` at line 63.\n* **Transitive Dependencies:** The function `display_adventure_list` in `src/game_workflows/game.py` transitively depends on `initialize_adventure_state` (at hop 2).\n* **Blast Radius:** The overall blast radius analysis indicates a total of 6 affected symbols and 3 affected files.\n* **Test Coverage:** Test traceability shows 0 associated unit or integration tests for `load_adventure`.",
+      "ground_truth_answer": "Changing the signature of `load_adventure(uuid)` in `src/game_workflows/loaders.py` breaks its sole caller:\n`initialize_adventure_state(uuid)` in `src/game_workflows/game.py:63`.\nThis prevents users from resuming any saved games via the '🎮' button in `display_adventure_list()`.",
+      "verdict_reason": "The agent accurately identified the definition location of load_adventure, the sole calling function (initialize_adventure_state), the file path (src/game_workflows/game.py), and line number (63), aligning with the ground truth solution.",
+      "latency_seconds": 8.89
+    },
+    {
+      "question_id": "Q45",
+      "question": "What is the impact of modifying `create_character_form()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_get_symbol_code_snippet",
+        "tool_calculate_blast_radius",
+        "tool_traverse_call_graph",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='create_character_form')`",
+      "agent_final_response": "Based on the verified Blackboard facts, modifying `create_character_form()` has the following impacts:\n\n* **Direct Callers and Imports:** `create_character_form()` is defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\player.py` from line 14 to line 188. It is imported by `game.py` from `src.game_workflows.player` and is directly called by `play_game()` in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\game_workflows\\game.py` at line 35.\n* **Internal Helpers:** Changes to this function may affect or interact with internal helper functions also defined within `player.py`, which include `initialize_session_state()`, `calculate_points_spent()`, and `reset_character_form()`.\n* **Workflow and UI Functionality:** Modifying `create_character_form()` directly impacts the character creation workflow in the Streamlit UI, session state initialization, ability score point buy mechanics, equipment selection, and character saving logic.",
+      "ground_truth_answer": "Modifying `create_character_form()` in `src/game_workflows/player.py` directly impacts:\n1. Its caller `play_game()` in `src/game_workflows/game.py:35` when `character_creation` mode is active.\n2. The entire hero creation workflow: point-buy calculation (`calculate_points_spent`, `update_ability_score`), equipment selection (`weapon_dict`, `armor_dict`), and character saving (`save_characters`).",
+      "verdict_reason": "The agent accurately identified the definition location, caller function (`play_game()` in `game.py` at line 35), and the components of the hero creation workflow (point-buy mechanics, equipment selection, and character saving) matching the ground truth solution.",
+      "latency_seconds": 13.77
+    },
+    {
+      "question_id": "Q46",
+      "question": "What will happen across the system if I modify `start_adventure()` in `core.py`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_search_codebase_semantic"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='start_adventure')`",
+      "agent_final_response": "Based on the verified Blackboard facts provided, there is no codebase evidence or snippets available regarding `start_adventure()` in `core.py`. Therefore, I cannot speculate or fabricate details on what will happen across the system if this function is modified.",
+      "ground_truth_answer": "Modifying `start_adventure()` in `src/game_workflows/core.py` impacts both entry points in `src/game_workflows/game.py`:\n1. `play_game()` (line 38) when starting a fresh adventure.\n2. `display_adventure_list()` (line 54) when resuming an existing adventure.\nIt disrupts the core gameplay loop: chat turn progression, RAG vector store indexing, character display, and session persistence.",
+      "verdict_reason": "The agent failed to answer the question using the ground truth information, stating that no codebase evidence was available.",
+      "latency_seconds": 13.13
+    },
+    {
+      "question_id": "Q47",
+      "question": "What is the blast radius of modifying `OllamaApi.start_adventure()`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_calculate_blast_radius",
+        "tool_get_symbol_code_snippet"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='start_adventure')`",
+      "agent_final_response": "Based on the verified Blackboard facts, here is the blast radius analysis for modifying `OllamaApi.start_adventure()`:\n\n- **Definition Location:** The function `OllamaApi.start_adventure()` is defined in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\api_workflows\\call_api.py` from lines 24 to 55.\n- **Blast Radius:** According to the blast radius analysis (`tool_calculate_blast_radius`) for incoming references, there are **0 incoming calls or usages** from other components across the codebase. The `total_affected_symbols` count is `1`, covering exclusively the function itself.\n- **Function Details:** The function accepts the parameters `characters`, `difficulty`, and an optional `user_prompt`, utilizes `load_characters()`, constructs a `ChatPromptTemplate`, and streams chunks from an LLM chain.",
+      "ground_truth_answer": "Modifying `OllamaApi.start_adventure()` in `src/api_workflows/call_api.py` directly impacts:\n`start_adventure()` in `src/game_workflows/core.py:51`.\nIt breaks the opening scene generation, party members introduction, difficulty prompt formatting, and initial story chunk streaming.",
+      "verdict_reason": "The agent incorrectly claimed that there are 0 incoming calls or usages for `OllamaApi.start_adventure()`, missing the critical calling site in `src/game_workflows/core.py` and its functional impacts (opening scene generation, party introduction, difficulty prompt formatting, and story chunk streaming) specified in the ground truth.",
+      "latency_seconds": 57.7
+    },
+    {
+      "question_id": "Q48",
+      "question": "What is the blast radius of modifying `OllamaApi.progress_story()`?",
+      "is_correct": false,
+      "tools_called_by_code": [
+        "tool_calculate_blast_radius",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='progress_story')`",
+      "agent_final_response": "Based on the verified Blackboard facts, the blast radius of modifying `OllamaApi.progress_story()` is currently restricted only to the method itself (`total_affected_symbols`: 1, `total_affected_files`: 1). \n\nSpecifically:\n- **Target Symbol:** `OllamaApi.progress_story`\n- **Location:** File `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\api_workflows\\call_api.py` at line 74.\n- **Dependencies:** There are no incoming callers or downstream dependencies detected in the codebase graph traversal.",
+      "ground_truth_answer": "Modifying `OllamaApi.progress_story()` in `src/api_workflows/call_api.py` directly impacts:\n`start_adventure()` in `src/game_workflows/core.py:122`.\nIt breaks player turn processing, semantic vector search against `history_store`, LangChain history-aware retrieval, and turn-by-turn story continuation streaming.",
+      "verdict_reason": "The agent failed to identify the downstream callers and impact of modifying OllamaApi.progress_story(), incorrectly stating that there are no incoming callers or downstream dependencies, which contradicts the ground truth that it impacts start_adventure() in src/game_workflows/core.py and breaks player turn processing.",
+      "latency_seconds": 5.42
+    },
+    {
+      "question_id": "Q49",
+      "question": "What will break if I modify `check_ollama_availability()` in `utils.py`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_calculate_blast_radius",
+        "tool_traverse_call_graph",
+        "tool_query_test_traceability"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='check_ollama_availability')`",
+      "agent_final_response": "Based on the verified Blackboard facts, modifying the function `check_ollama_availability()` in `utils.py` will impact the following dependent components:\n\n1. **`test_model_availability`**: \n   - Located in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\utils.py` (lines 21–22), this function directly calls `check_ollama_availability()`. Any changes to its behavior, return values, or signature could break this test function.\n\n2. **`display_updated_status_sidebar` in `main.py`**: \n   - `check_ollama_availability` is imported and used in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\main.py` at line 29 via `display_updated_status_sidebar()`. \n\n3. **`main` function in `main.py`**: \n   - Because `display_updated_status_sidebar` is called by the `main` function in `main.py` (line 37), disruptions in `check_ollama_availability()` can propagate up to the main application flow.",
+      "ground_truth_answer": "Modifying `check_ollama_availability()` in `src/utils.py` directly impacts 2 callers:\n1. `display_updated_status_sidebar()` in `main.py:29` (status display in the sidebar).\n2. `test_model_availability()` in `src/utils.py:22` (blocks page execution if Ollama is offline).\nAny malfunction will prevent users from accessing the app or incorrectly report Ollama as offline.",
+      "verdict_reason": "The agent correctly identified the two primary callers of `check_ollama_availability()` as specified in the ground truth (`test_model_availability` in `src/utils.py` and `display_updated_status_sidebar()` in `main.py`), along with the impact on the application flow.",
+      "latency_seconds": 9.17
+    },
+    {
+      "question_id": "Q50",
+      "question": "What is the system-wide impact of changing `manage_models()` in `model.py`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_calculate_blast_radius",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='manage_models')`",
+      "agent_final_response": "Based on the verified Blackboard facts, changing `manage_models()` in `model.py` (defined at line 33) has a direct system-wide impact because it is imported and called in `main.py` within the `main` function at line 56.",
+      "ground_truth_answer": "The system-wide impact of changing `manage_models()` in `src/imports/model.py` affects:\n`main()` in `main.py:56` when the user selects 'Manage Models'.\nBecause `manage_models()` initializes `st.session_state.dm_model`, `st.session_state.api`, `st.session_state.embedding_model`, `st.session_state.vector_store`, and `st.session_state.history_store`, breaking it halts model configuration and causes `play_game()` to block with a configuration warning.",
+      "verdict_reason": "The agent accurately identified the system-wide impact, noting that `manage_models()` in `model.py` is called within the `main` function in `main.py` at line 56, matching the core calling site specified in the ground truth.",
+      "latency_seconds": 6.94
+    },
+    {
+      "question_id": "Q51",
+      "question": "What breaks if I modify `initialize_rag()`?",
+      "is_correct": true,
+      "tools_called_by_code": [
+        "tool_calculate_blast_radius",
+        "tool_traverse_call_graph"
+      ],
+      "correct_tools_expected": "`tool_calculate_blast_radius(target_symbol='initialize_rag')`",
+      "agent_final_response": "Based on the verified Blackboard facts, modifying the function `initialize_rag()` (defined at line 20 in `C:\\Users\\manmahaj2\\OneDrive - Publicis Groupe\\Documents\\Personal\\MLOps\\dnd\\src\\imports\\model.py`) will directly impact the function `manage_models` located in the same file. Specifically, `manage_models` calls `initialize_rag` at lines 33 and 67, so any changes to its behavior, signature, or return values could break these calls.\n\n### Verified Negative Findings (Pruned Paths):\n- Tool `tool_traverse_call_graph` (Step 2) failed: Tool execution failure: Existing exports of data: object cannot be re-sized",
+      "ground_truth_answer": "Modifying `initialize_rag()` in `src/imports/model.py` breaks:\n1. `manage_models()` in `model.py:67` where `st.session_state.vector_store` is assigned.\n2. `OllamaApi.progress_story()` in `call_api.py:129` where `st.session_state.vector_store` is passed to `create_history_aware_retriever()`.\nThis breaks D&D rules handbook retrieval during gameplay.",
+      "verdict_reason": "The agent correctly identified the file path (`src/imports/model.py`), the function being modified (`initialize_rag()`), and the primary caller that breaks (`manage_models`), along with line numbers. While it missed the secondary impact on `OllamaApi.progress_story()` in `call_api.py`, it successfully captured the core breaking dependency in the main model file without hallucinating false conclusions.",
+      "latency_seconds": 7.0
+    }
+  ]
+}
